@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "helixgrid"
+version = "0.1.0"
+description = "Python SDK and CLI for the HelixGrid distributed workflow runtime"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "HelixGrid contributors" }]
+keywords = ["workflow", "distributed-systems", "scheduler", "dag", "orchestration"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = []
+
+[project.scripts]
+helix = "helixgrid.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/helixgrid"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
