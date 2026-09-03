@@ -14,6 +14,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  source-size:
+    name: Source size ≥10k lines
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Count hand-maintained source code
+        run: python scripts/code_stats.py . --minimum 10000 --files
+
   go:
     name: Go coordinator
     runs-on: ubuntu-latest
