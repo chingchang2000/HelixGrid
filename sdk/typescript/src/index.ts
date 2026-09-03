@@ -177,7 +177,7 @@ export class HelixClient {
   }
 
   async waitForWorkflow(id: string, options: WaitOptions = {}): Promise<Workflow> {
-    const interval = options.pollIntervalMs ?? 500;
+    const pollInterval = options.pollIntervalMs ?? 500;
     const started = Date.now();
     const terminal = new Set<WorkflowState>(["SUCCEEDED", "FAILED", "CANCELLED"]);
 
@@ -190,20 +190,27 @@ export class HelixClient {
       if (options.timeoutMs !== undefined && Date.now() - started >= options.timeoutMs) {
         throw new Error(`Timed out waiting for workflow ${id}`);
       }
-      await sleep(interval, options.signal);
+      await sleep(pollInterval, options.signal);
     }
   }
 
-  async *events(id: string, options: { signal?: AbortSignal; lastEventId?: number } = {}): AsyncGenerator<HelixEvent> {
+  async *events(
+    id: string,
+    options: { signal?: AbortSignal; lastEventId?: number } = {},
+  ): AsyncGenerator<HelixEvent> {
     const headers = new Headers(this.defaultHeaders);
     headers.set("Accept", "text/event-stream");
     if (options.lastEventId !== undefined) {
       headers.set("Last-Event-ID", String(options.lastEventId));
     }
 
+    const init: RequestInit = { method: "GET", headers };
+    if (options.signal !== undefined) {
+      init.signal = options.signal;
+    }
     const response = await this.fetchImpl(
       `${this.baseUrl}/v1/workflows/${encodeURIComponent(id)}/events`,
-      { method: "GET", headers, signal: options.signal },
+      init,
     );
     if (!response.ok) {
       await this.throwApiError(response);
@@ -216,13 +223,11 @@ export class HelixClient {
     const decoder = new TextDecoder();
     let buffer = "";
     let eventName = "message";
-    let eventId: string | undefined;
     let dataLines: string[] = [];
 
     const emit = (): HelixEvent | undefined => {
       if (dataLines.length === 0) {
         eventName = "message";
-        eventId = undefined;
         return undefined;
       }
       const raw = dataLines.join("\n");
@@ -234,7 +239,6 @@ export class HelixClient {
         parsed = { type: eventName, data: { text: raw } };
       }
       eventName = "message";
-      eventId = undefined;
       if (!isRecord(parsed)) {
         return undefined;
       }
@@ -267,7 +271,8 @@ export class HelixClient {
               eventName = rawValue;
               break;
             case "id":
-              eventId = rawValue;
+              // Event IDs are already present in the JSON event body. The SSE id field is
+              // intentionally accepted for wire compatibility and reconnect semantics.
               break;
             case "data":
               dataLines.push(rawValue);
@@ -288,7 +293,7 @@ export class HelixClient {
     options: {
       body?: unknown;
       headers?: Record<string, string>;
-      signal?: AbortSignal;
+      signal?: AbortSignal | undefined;
     } = {},
   ): Promise<T> {
     const headers = new Headers(this.defaultHeaders);
@@ -301,10 +306,7 @@ export class HelixClient {
       body = JSON.stringify(options.body);
     }
 
-    const init: RequestInit = {
-      method,
-      headers,
-    };
+    const init: RequestInit = { method, headers };
     if (body !== undefined) init.body = body;
     if (options.signal !== undefined) init.signal = options.signal;
 
@@ -467,12 +469,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.reject(signal.reason);
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, milliseconds);
-    if (!signal) return;
-    const abort = () => {
-      clearTimeout(timer);
-      reject(signal.reason);
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      resolve();
     };
-    signal.addEventListener("abort", abort, { once: true });
+    const abort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    const timer = setTimeout(finish, milliseconds);
+    signal?.addEventListener("abort", abort, { once: true });
   });
 }
