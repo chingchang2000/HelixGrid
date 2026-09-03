@@ -8,12 +8,6 @@ services:
       HELIX_ADDR: 0.0.0.0:8080
     ports:
       - "8080:8080"
-    healthcheck:
-      test: ["CMD", "/helixd"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-      start_period: 2s
     restart: unless-stopped
 
   worker:
