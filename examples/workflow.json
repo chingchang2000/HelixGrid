@@ -1,0 +1,57 @@
+{
+  "name": "polyglot-release-pipeline",
+  "metadata": {
+    "owner": "platform",
+    "purpose": "example",
+    "shape": "fan-out-fan-in"
+  },
+  "tasks": [
+    {
+      "id": "bootstrap",
+      "command": ["sh", "-lc", "echo '[bootstrap] preparing workspace' && sleep 1"],
+      "timeout_seconds": 30,
+      "retry": { "max_attempts": 2, "base_delay_ms": 250, "max_delay_ms": 2000 }
+    },
+    {
+      "id": "lint-go",
+      "depends_on": ["bootstrap"],
+      "command": ["sh", "-lc", "echo '[go] linting coordinator' && sleep 1"]
+    },
+    {
+      "id": "test-rust",
+      "depends_on": ["bootstrap"],
+      "command": ["sh", "-lc", "echo '[rust] testing worker' && sleep 2"],
+      "retry": { "max_attempts": 3, "base_delay_ms": 300, "max_delay_ms": 3000 }
+    },
+    {
+      "id": "test-python",
+      "depends_on": ["bootstrap"],
+      "command": ["sh", "-lc", "echo '[python] testing SDK' && sleep 1"]
+    },
+    {
+      "id": "test-typescript",
+      "depends_on": ["bootstrap"],
+      "command": ["sh", "-lc", "echo '[typescript] checking SDK' && sleep 1"]
+    },
+    {
+      "id": "build-simulator",
+      "depends_on": ["bootstrap"],
+      "command": ["sh", "-lc", "echo '[c++] building simulator' && sleep 2"]
+    },
+    {
+      "id": "package",
+      "depends_on": ["lint-go", "test-rust", "test-python", "test-typescript", "build-simulator"],
+      "command": ["sh", "-lc", "echo '[package] assembling artifacts' && sleep 1"]
+    },
+    {
+      "id": "verify",
+      "depends_on": ["package"],
+      "command": ["sh", "-lc", "echo '[verify] checksums OK' && sleep 1"]
+    },
+    {
+      "id": "publish",
+      "depends_on": ["verify"],
+      "command": ["sh", "-lc", "echo '[publish] release complete'"]
+    }
+  ]
+}
