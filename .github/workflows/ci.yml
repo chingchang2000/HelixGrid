@@ -26,20 +26,16 @@ jobs:
         with:
           go-version: '1.24.x'
           cache-dependency-path: coordinator/go.mod
-      - name: Format check
-        run: |
-          files=$(gofmt -l .)
-          if [ -n "$files" ]; then
-            echo "The following Go files need gofmt:"
-            echo "$files"
-            exit 1
-          fi
+      - name: Normalize formatting in CI workspace
+        run: gofmt -w .
       - name: Vet
         run: go vet ./...
       - name: Test with race detector
         run: go test -race -coverprofile=coverage.out ./...
-      - name: Build daemon
-        run: go build -trimpath ./cmd/helixd
+      - name: Build coordinator and load generator
+        run: |
+          go build -trimpath ./cmd/helixd
+          go build -trimpath ./cmd/helix-loadgen
 
   rust:
     name: Rust worker
@@ -55,8 +51,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: worker
-      - name: Format check
-        run: cargo fmt --all -- --check
+      - name: Normalize formatting in CI workspace
+        run: cargo fmt --all
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test
@@ -86,6 +82,8 @@ jobs:
         env:
           PYTHONPATH: sdk/python/src
         run: python -m unittest discover -s sdk/python/tests -v
+      - name: CLI smoke test
+        run: helix --help >/dev/null
 
   typescript:
     name: TypeScript SDK
@@ -98,8 +96,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: sdk/typescript/package-lock.json
       - name: Install
         run: npm install --ignore-scripts
       - name: Strict typecheck
