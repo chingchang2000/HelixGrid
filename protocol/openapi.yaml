@@ -1,0 +1,443 @@
+openapi: 3.1.0
+info:
+  title: HelixGrid Coordinator API
+  version: 0.1.0
+  description: |
+    HTTP contract used by HelixGrid clients and workers. The coordinator owns
+    workflow state, dependency evaluation, task leases and the append-only event stream.
+servers:
+  - url: http://127.0.0.1:8080
+tags:
+  - name: System
+  - name: Workflows
+  - name: Workers
+  - name: Leases
+paths:
+  /healthz:
+    get:
+      tags: [System]
+      operationId: health
+      responses:
+        "200":
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, time]
+                properties:
+                  status: { type: string, const: ok }
+                  time: { type: string, format: date-time }
+  /readyz:
+    get:
+      tags: [System]
+      operationId: readiness
+      responses:
+        "200":
+          description: Coordinator is ready to receive traffic.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ready]
+                properties:
+                  ready: { type: boolean }
+  /v1/workflows:
+    get:
+      tags: [Workflows]
+      operationId: listWorkflows
+      responses:
+        "200":
+          description: Workflows newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowListEnvelope"
+    post:
+      tags: [Workflows]
+      operationId: createWorkflow
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, maxLength: 512 }
+          description: Repeated submissions with the same key return the original workflow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkflowSpec"
+      responses:
+        "201":
+          description: Workflow created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowEnvelope" }
+        "200":
+          description: Existing workflow returned for an idempotent replay.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowEnvelope" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/workflows/{workflowId}:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowId"
+    get:
+      tags: [Workflows]
+      operationId: getWorkflow
+      responses:
+        "200":
+          description: Current workflow snapshot.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowEnvelope" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/workflows/{workflowId}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowId"
+    post:
+      tags: [Workflows]
+      operationId: cancelWorkflow
+      responses:
+        "200":
+          description: Cancelled or already-terminal workflow snapshot.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowEnvelope" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/workflows/{workflowId}/events:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowId"
+      - name: Last-Event-ID
+        in: header
+        required: false
+        schema: { type: integer, format: int64, minimum: 0 }
+    get:
+      tags: [Workflows]
+      operationId: streamWorkflowEvents
+      description: |
+        Server-Sent Events stream. Historical events after Last-Event-ID are replayed
+        before live delivery begins. Comment frames are emitted periodically as keepalives.
+      responses:
+        "200":
+          description: SSE event stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/workers:
+    get:
+      tags: [Workers]
+      operationId: listWorkers
+      responses:
+        "200":
+          description: Registered workers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Worker" }
+  /v1/workers/register:
+    post:
+      tags: [Workers]
+      operationId: registerWorker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterWorkerRequest" }
+      responses:
+        "201":
+          description: Worker registered.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Worker" }
+        "400": { $ref: "#/components/responses/Error" }
+  /v1/workers/{workerId}/heartbeat:
+    parameters:
+      - $ref: "#/components/parameters/WorkerId"
+    post:
+      tags: [Workers]
+      operationId: heartbeatWorker
+      responses:
+        "200":
+          description: Updated worker snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Worker" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/leases:
+    post:
+      tags: [Leases]
+      operationId: acquireLease
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [worker_id]
+              properties:
+                worker_id: { type: string }
+      responses:
+        "200":
+          description: A runnable task lease.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Lease" }
+        "204":
+          description: No compatible runnable task currently exists.
+        "400": { $ref: "#/components/responses/Error" }
+  /v1/leases/{token}/start:
+    parameters:
+      - $ref: "#/components/parameters/LeaseToken"
+    post:
+      tags: [Leases]
+      operationId: startLease
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/leases/{token}/renew:
+    parameters:
+      - $ref: "#/components/parameters/LeaseToken"
+    post:
+      tags: [Leases]
+      operationId: renewLease
+      responses:
+        "200":
+          description: Renewed lease.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Lease" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/leases/{token}/logs:
+    parameters:
+      - $ref: "#/components/parameters/LeaseToken"
+    post:
+      tags: [Leases]
+      operationId: appendLeaseLog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [stream, text]
+              properties:
+                stream:
+                  type: string
+                  enum: [stdout, stderr]
+                text:
+                  type: string
+                  maxLength: 65536
+      responses:
+        "202": { $ref: "#/components/responses/Ok" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/leases/{token}/complete:
+    parameters:
+      - $ref: "#/components/parameters/LeaseToken"
+    post:
+      tags: [Leases]
+      operationId: completeLease
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [exit_code]
+              properties:
+                exit_code: { type: integer }
+                error: { type: string }
+      responses:
+        "200":
+          description: Workflow snapshot after applying the task result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowEnvelope" }
+        "409": { $ref: "#/components/responses/Error" }
+components:
+  parameters:
+    WorkflowId:
+      name: workflowId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    WorkerId:
+      name: workerId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    LeaseToken:
+      name: token
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+  responses:
+    Error:
+      description: Error response.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Ok:
+      description: Operation accepted.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok]
+            properties:
+              ok: { type: boolean }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    StringMap:
+      type: object
+      additionalProperties: { type: string }
+    RetryPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        max_attempts: { type: integer, minimum: 1, maximum: 100, default: 1 }
+        base_delay_ms: { type: integer, minimum: 1, default: 250 }
+        max_delay_ms: { type: integer, minimum: 1, default: 30000 }
+    TaskSpec:
+      type: object
+      additionalProperties: false
+      required: [id, command]
+      properties:
+        id: { type: string, minLength: 1 }
+        depends_on:
+          type: array
+          uniqueItems: true
+          items: { type: string }
+        command:
+          type: array
+          minItems: 1
+          items: { type: string }
+        env: { $ref: "#/components/schemas/StringMap" }
+        timeout_seconds: { type: integer, minimum: 0, maximum: 86400 }
+        retry: { $ref: "#/components/schemas/RetryPolicy" }
+        labels: { $ref: "#/components/schemas/StringMap" }
+    WorkflowSpec:
+      type: object
+      additionalProperties: false
+      required: [name, tasks]
+      properties:
+        name: { type: string, minLength: 1 }
+        metadata: { $ref: "#/components/schemas/StringMap" }
+        tasks:
+          type: array
+          minItems: 1
+          maxItems: 10000
+          items: { $ref: "#/components/schemas/TaskSpec" }
+    TaskRuntime:
+      type: object
+      required: [state, attempt, output_bytes]
+      properties:
+        state:
+          type: string
+          enum: [PENDING, READY, LEASED, RUNNING, SUCCEEDED, FAILED, RETRY_WAIT, CANCELLED]
+        attempt: { type: integer, minimum: 0 }
+        lease_token: { type: string }
+        lease_owner: { type: string }
+        lease_until: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        next_retry_at: { type: string, format: date-time }
+        exit_code: { type: integer }
+        error: { type: string }
+        output_bytes: { type: integer, format: int64, minimum: 0 }
+    Workflow:
+      type: object
+      required: [id, name, state, created_at, updated_at, tasks, runtime, order]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        metadata: { $ref: "#/components/schemas/StringMap" }
+        state:
+          type: string
+          enum: [PENDING, RUNNING, SUCCEEDED, FAILED, CANCELLED]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        tasks:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/TaskSpec" }
+        runtime:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/TaskRuntime" }
+        order:
+          type: array
+          items: { type: string }
+    WorkflowEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: "#/components/schemas/Workflow" }
+    WorkflowListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Workflow" }
+    RegisterWorkerRequest:
+      type: object
+      additionalProperties: false
+      required: [name, version, capacity]
+      properties:
+        name: { type: string, minLength: 1 }
+        version: { type: string }
+        labels: { $ref: "#/components/schemas/StringMap" }
+        capacity: { type: integer, minimum: 1, maximum: 256 }
+    Worker:
+      type: object
+      required: [id, name, version, capacity, active_leases, registered_at, last_heartbeat]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        version: { type: string }
+        labels: { $ref: "#/components/schemas/StringMap" }
+        capacity: { type: integer }
+        active_leases: { type: integer }
+        registered_at: { type: string, format: date-time }
+        last_heartbeat: { type: string, format: date-time }
+    Lease:
+      type: object
+      required: [token, workflow_id, task_id, worker_id, attempt, expires_at, spec]
+      properties:
+        token: { type: string }
+        workflow_id: { type: string }
+        task_id: { type: string }
+        worker_id: { type: string }
+        attempt: { type: integer, minimum: 1 }
+        expires_at: { type: string, format: date-time }
+        spec: { $ref: "#/components/schemas/TaskSpec" }
