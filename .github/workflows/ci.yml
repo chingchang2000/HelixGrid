@@ -120,6 +120,25 @@ jobs:
           build/simulator/helix-sim --demo --workers 4 --runs 100 --seed 1337 --json > second.json
           diff -u first.json second.json
 
+  java:
+    name: Java replay verifier
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile zero-dependency verifier
+        run: |
+          mkdir -p build/replay-verifier
+          javac --release 21 -Xlint:all -Werror \
+            -d build/replay-verifier \
+            tools/replay-verifier/src/main/java/dev/helixgrid/verifier/Json.java \
+            tools/replay-verifier/src/main/java/dev/helixgrid/verifier/Main.java
+      - name: CLI smoke test
+        run: java -cp build/replay-verifier dev.helixgrid.verifier.Main --help >/dev/null
+
   protocol:
     name: Protocol contracts
     runs-on: ubuntu-latest
