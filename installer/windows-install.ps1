@@ -42,7 +42,7 @@ function Ensure-Winget {
 }
 
 function Package-Installed([string]$Id) {
-    & winget.exe list --exact --id $Id --accept-source-agreements *> $null
+    & winget.exe list --exact --id $Id *> $null
     return $LASTEXITCODE -eq 0
 }
 
@@ -73,7 +73,7 @@ function Test-WslReady {
 
 function Register-Resume {
     $batch = Join-Path $RepoRoot "windows-install.bat"
-    $command = 'cmd.exe /c "' + $batch + ' -Resume"'
+    $command = 'cmd.exe /c ""' + $batch + '" -Resume"'
     New-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" -Name "HelixGridInstall" -Value $command -PropertyType String -Force | Out-Null
 }
 
