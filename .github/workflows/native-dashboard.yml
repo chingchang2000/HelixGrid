@@ -1,0 +1,46 @@
+name: Native Windows Dashboard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'dashboard-native/**'
+      - '.github/workflows/native-dashboard.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-dashboard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build HelixGrid.exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build
+        shell: pwsh
+        run: dotnet build .\dashboard-native\HelixGrid.csproj -c Release -p:ContinuousIntegrationBuild=true
+
+      - name: Publish single-file Windows executable
+        shell: pwsh
+        run: |
+          dotnet publish .\dashboard-native\HelixGrid.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -o .\artifacts\HelixGrid
+          if (-not (Test-Path '.\artifacts\HelixGrid\HelixGrid.exe')) { throw 'HelixGrid.exe was not produced' }
+          Get-Item '.\artifacts\HelixGrid\HelixGrid.exe' | Format-List Name,Length,FullName
+
+      - name: Upload HelixGrid.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: HelixGrid-Windows-x64
+          path: artifacts/HelixGrid/HelixGrid.exe
+          if-no-files-found: error
+          compression-level: 0
