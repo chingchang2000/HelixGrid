@@ -485,7 +485,7 @@ public final class Main {
             task.lease = null;
             if (!workerId.isEmpty()) {
                 var worker = worker(workerId);
-                worker.activeTasks.remove(event.workflowId() + "/" + event.taskId());
+                worker.activeTasks.remove(event.workflowId() + "/" + task.id);
                 if (expiry) worker.leasesExpired++;
             }
         }
