@@ -1,0 +1,29 @@
+{
+  "name": "windows-file-audit",
+  "metadata": {
+    "purpose": "scan-files-find-duplicates-and-checksums"
+  },
+  "tasks": [
+    {
+      "id": "inventory",
+      "command": ["python3", "/opt/helix/file_tools.py", "inventory", "--root", "/workspace", "--output", "/results/inventory.json"],
+      "timeout_seconds": 3600
+    },
+    {
+      "id": "duplicates",
+      "command": ["python3", "/opt/helix/file_tools.py", "duplicates", "--root", "/workspace", "--output", "/results/duplicates.json"],
+      "timeout_seconds": 86400
+    },
+    {
+      "id": "checksums",
+      "command": ["python3", "/opt/helix/file_tools.py", "checksums", "--root", "/workspace", "--output", "/results/checksums.json", "--csv", "/results/checksums.csv"],
+      "timeout_seconds": 86400
+    },
+    {
+      "id": "summary",
+      "depends_on": ["inventory", "duplicates", "checksums"],
+      "command": ["python3", "/opt/helix/file_tools.py", "summary", "--inventory", "/results/inventory.json", "--duplicates", "/results/duplicates.json", "--checksums", "/results/checksums.json", "--output", "/results/summary.txt"],
+      "timeout_seconds": 60
+    }
+  ]
+}
