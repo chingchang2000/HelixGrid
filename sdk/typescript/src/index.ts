@@ -1,3 +1,5 @@
+const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+
 export type WorkflowState =
   | "PENDING"
   | "RUNNING"
@@ -124,7 +126,17 @@ export class HelixClient {
   private readonly defaultHeaders: Record<string, string>;
 
   constructor(options: HelixClientOptions = {}) {
-    this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:8080").replace(/\/+$/, "");
+    const rawBaseUrl = options.baseUrl ?? "http://127.0.0.1:8080";
+    let parsedBaseUrl: URL;
+    try {
+      parsedBaseUrl = new URL(rawBaseUrl);
+    } catch {
+      throw new Error("baseUrl must be an absolute http:// or https:// URL");
+    }
+    if (parsedBaseUrl.protocol !== "http:" && parsedBaseUrl.protocol !== "https:") {
+      throw new Error("baseUrl must use http:// or https://");
+    }
+    this.baseUrl = rawBaseUrl.replace(/\/+$/, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     if (!this.fetchImpl) {
       throw new Error("No fetch implementation available");
@@ -178,6 +190,15 @@ export class HelixClient {
 
   async waitForWorkflow(id: string, options: WaitOptions = {}): Promise<Workflow> {
     const pollInterval = options.pollIntervalMs ?? 500;
+    if (!Number.isFinite(pollInterval) || pollInterval <= 0) {
+      throw new Error("pollIntervalMs must be greater than zero");
+    }
+    if (
+      options.timeoutMs !== undefined &&
+      (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 0)
+    ) {
+      throw new Error("timeoutMs may not be negative");
+    }
     const started = Date.now();
     const terminal = new Set<WorkflowState>(["SUCCEEDED", "FAILED", "CANCELLED"]);
 
@@ -201,6 +222,9 @@ export class HelixClient {
     const headers = new Headers(this.defaultHeaders);
     headers.set("Accept", "text/event-stream");
     if (options.lastEventId !== undefined) {
+      if (!Number.isSafeInteger(options.lastEventId) || options.lastEventId < 0) {
+        throw new Error("lastEventId must be a non-negative safe integer");
+      }
       headers.set("Last-Event-ID", String(options.lastEventId));
     }
 
@@ -351,6 +375,7 @@ export class WorkflowBuilder {
 
   constructor(name: string) {
     if (!name.trim()) throw new Error("Workflow name may not be empty");
+    if ([...name].length > 200) throw new Error("Workflow name may not exceed 200 characters");
     this.name = name;
   }
 
@@ -361,8 +386,25 @@ export class WorkflowBuilder {
 
   task(id: string, options: BuilderTaskOptions): this {
     if (!id.trim()) throw new Error("Task id may not be empty");
+    if ([...id].length > 200 || !TASK_ID_PATTERN.test(id)) {
+      throw new Error(`Invalid task id: ${id}`);
+    }
     if (this.tasks.has(id)) throw new Error(`Duplicate task id: ${id}`);
-    if (options.command.length === 0) throw new Error(`Task ${id} has an empty command`);
+    if (options.command.length === 0 || !options.command[0]?.trim()) {
+      throw new Error(`Task ${id} has an empty command`);
+    }
+    if (options.command.length > 4096) {
+      throw new Error(`Task ${id} exceeds the 4096 command argument limit`);
+    }
+    if (
+      options.timeoutSeconds !== undefined &&
+      (!Number.isInteger(options.timeoutSeconds) ||
+        options.timeoutSeconds < 0 ||
+        options.timeoutSeconds > 86_400)
+    ) {
+      throw new Error("timeoutSeconds must be an integer between 0 and 86400");
+    }
+    if (options.retry !== undefined) validateRetryPolicy(options.retry);
 
     const task: TaskSpec = {
       id,
@@ -446,6 +488,38 @@ export class WorkflowBuilder {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Unknown task: ${id}`);
     return task;
+  }
+}
+
+function validateRetryPolicy(retry: RetryPolicy): void {
+  if (
+    retry.max_attempts !== undefined &&
+    (!Number.isInteger(retry.max_attempts) || retry.max_attempts < 1 || retry.max_attempts > 100)
+  ) {
+    throw new Error("max_attempts must be an integer between 1 and 100");
+  }
+  if (
+    retry.base_delay_ms !== undefined &&
+    (!Number.isInteger(retry.base_delay_ms) ||
+      retry.base_delay_ms < 1 ||
+      retry.base_delay_ms > 3_600_000)
+  ) {
+    throw new Error("base_delay_ms must be an integer between 1 and 3600000");
+  }
+  if (
+    retry.max_delay_ms !== undefined &&
+    (!Number.isInteger(retry.max_delay_ms) ||
+      retry.max_delay_ms < 1 ||
+      retry.max_delay_ms > 86_400_000)
+  ) {
+    throw new Error("max_delay_ms must be an integer between 1 and 86400000");
+  }
+  if (
+    retry.base_delay_ms !== undefined &&
+    retry.max_delay_ms !== undefined &&
+    retry.max_delay_ms < retry.base_delay_ms
+  ) {
+    throw new Error("max_delay_ms may not be smaller than base_delay_ms");
   }
 }
 
