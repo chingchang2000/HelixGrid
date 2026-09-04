@@ -22,5 +22,13 @@ services:
       RUST_LOG: helix_worker=info
     depends_on:
       - coordinator
+    volumes:
+      - type: bind
+        source: "${HELIX_WORKSPACE:-./workspace}"
+        target: /workspace
+        read_only: true
+      - type: bind
+        source: "${HELIX_RESULTS:-./helix-results}"
+        target: /results
     init: true
     restart: unless-stopped
