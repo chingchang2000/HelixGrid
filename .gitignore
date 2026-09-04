@@ -77,3 +77,9 @@ compile_commands.json
 simulation-*.json
 first.json
 second.json
+
+# HelixFiles local data
+workspace/*
+!workspace/.gitkeep
+helix-results/*
+!helix-results/.gitkeep
