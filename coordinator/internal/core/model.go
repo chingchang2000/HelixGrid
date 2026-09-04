@@ -143,7 +143,7 @@ var validTaskTransitions = map[TaskState]map[TaskState]bool{
 	TaskPending:   {TaskReady: true, TaskCancelled: true},
 	TaskReady:     {TaskLeased: true, TaskCancelled: true},
 	TaskLeased:    {TaskRunning: true, TaskReady: true, TaskCancelled: true},
-	TaskRunning:   {TaskSucceeded: true, TaskFailed: true, TaskRetryWait: true, TaskCancelled: true},
+	TaskRunning:   {TaskSucceeded: true, TaskFailed: true, TaskRetryWait: true, TaskReady: true, TaskCancelled: true},
 	TaskRetryWait: {TaskReady: true, TaskCancelled: true},
 	TaskFailed:    {},
 	TaskSucceeded: {},
