@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, MutableMapping, Optional, Sequence
+
+
+_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
 
 class HelixError(RuntimeError):
@@ -27,7 +31,18 @@ class RetryPolicy:
     base_delay_ms: int = 250
     max_delay_ms: int = 30_000
 
+    def validate(self) -> None:
+        if not 1 <= self.max_attempts <= 100:
+            raise ValueError("max_attempts must be between 1 and 100")
+        if not 1 <= self.base_delay_ms <= 3_600_000:
+            raise ValueError("base_delay_ms must be between 1 and 3600000")
+        if not 1 <= self.max_delay_ms <= 86_400_000:
+            raise ValueError("max_delay_ms must be between 1 and 86400000")
+        if self.max_delay_ms < self.base_delay_ms:
+            raise ValueError("max_delay_ms may not be smaller than base_delay_ms")
+
     def as_dict(self) -> Dict[str, int]:
+        self.validate()
         return {
             "max_attempts": self.max_attempts,
             "base_delay_ms": self.base_delay_ms,
@@ -106,14 +121,22 @@ class WorkflowBuilder:
             raise ValueError(f"duplicate task id: {task_id}")
         if not task_id.strip():
             raise ValueError("task id may not be empty")
-        if not command:
+        if len(task_id) > 200 or _TASK_ID_RE.fullmatch(task_id) is None:
+            raise ValueError(f"invalid task id: {task_id!r}")
+        if not command or not str(command[0]).strip():
             raise ValueError("command may not be empty")
+        if len(command) > 4096:
+            raise ValueError("command exceeds 4096 arguments")
+        if timeout_seconds < 0 or timeout_seconds > 86_400:
+            raise ValueError("timeout_seconds must be between 0 and 86400")
+        selected_retry = retry or RetryPolicy()
+        selected_retry.validate()
         self._tasks[task_id] = Task(
             id=task_id,
             command=list(command),
             env=dict(env or {}),
             timeout_seconds=timeout_seconds,
-            retry=retry or RetryPolicy(),
+            retry=selected_retry,
             labels=dict(labels or {}),
         )
         return self
@@ -174,6 +197,11 @@ class HelixClient:
         timeout: float = 15.0,
         user_agent: str = "helixgrid-python/0.1.0",
     ) -> None:
+        parsed = urllib.parse.urlparse(base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("base_url must be an absolute http:// or https:// URL")
+        if timeout <= 0:
+            raise ValueError("timeout must be greater than zero")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.user_agent = user_agent
@@ -207,6 +235,10 @@ class HelixClient:
         poll_interval: float = 0.5,
         timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
+        if poll_interval <= 0:
+            raise ValueError("poll_interval must be greater than zero")
+        if timeout is not None and timeout < 0:
+            raise ValueError("timeout may not be negative")
         started = time.monotonic()
         terminal = {"SUCCEEDED", "FAILED", "CANCELLED"}
         while True:
@@ -230,7 +262,9 @@ class HelixClient:
             headers["Last-Event-ID"] = str(last_event_id)
         request = urllib.request.Request(self.base_url + path, headers=headers, method="GET")
         try:
-            response = urllib.request.urlopen(request, timeout=self.timeout)
+            # The coordinator emits SSE keepalives every 15 seconds. Keep at least
+            # twice that margin so scheduling jitter cannot cause false disconnects.
+            response = urllib.request.urlopen(request, timeout=max(self.timeout, 30.0))
         except urllib.error.HTTPError as exc:
             self._raise_http_error(exc)
             raise AssertionError("unreachable")
