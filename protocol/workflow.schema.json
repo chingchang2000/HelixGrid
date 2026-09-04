@@ -5,7 +5,10 @@
   "description": "Portable wire contract for dependency-aware HelixGrid workflows.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "tasks"],
+  "required": [
+    "name",
+    "tasks"
+  ],
   "properties": {
     "name": {
       "type": "string",
@@ -14,7 +17,14 @@
       "pattern": ".*\\S.*"
     },
     "metadata": {
-      "$ref": "#/$defs/stringMap"
+      "allOf": [
+        {
+          "$ref": "#/$defs/stringMap"
+        },
+        {
+          "maxProperties": 4096
+        }
+      ]
     },
     "tasks": {
       "type": "array",
@@ -31,7 +41,8 @@
       "propertyNames": {
         "type": "string",
         "minLength": 1,
-        "maxLength": 128
+        "maxLength": 128,
+        "pattern": ".*\\S.*"
       },
       "additionalProperties": {
         "type": "string",
@@ -65,7 +76,10 @@
     "task": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "command"],
+      "required": [
+        "id",
+        "command"
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -95,8 +109,12 @@
         },
         "env": {
           "allOf": [
-            { "$ref": "#/$defs/stringMap" },
-            { "maxProperties": 4096 }
+            {
+              "$ref": "#/$defs/stringMap"
+            },
+            {
+              "maxProperties": 4096
+            }
           ]
         },
         "timeout_seconds": {
@@ -110,8 +128,12 @@
         },
         "labels": {
           "allOf": [
-            { "$ref": "#/$defs/stringMap" },
-            { "maxProperties": 128 }
+            {
+              "$ref": "#/$defs/stringMap"
+            },
+            {
+              "maxProperties": 128
+            }
           ]
         }
       }
