@@ -219,6 +219,41 @@ jobs:
       - name: Apply durable schema
         run: docker exec -i helix-postgres psql -U postgres -v ON_ERROR_STOP=1 < storage/postgres/schema.sql
 
+  windows-ui:
+    name: Windows installer and dashboard
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Parse Windows installer PowerShell
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path '.\installer\windows-install.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+      - name: Compile Windows dashboard and file tools
+        run: |
+          python -m py_compile dashboard\helix_dashboard.py
+          python -m py_compile worker\file_tools.py
+      - name: Tkinter and dashboard import smoke test
+        run: |
+          python -c "import tkinter; import dashboard.helix_dashboard as d; print(d.DashboardConfig.default())"
+      - name: Verify one-click entry files
+        shell: pwsh
+        run: |
+          if (-not (Test-Path '.\windows-install.bat')) { throw 'windows-install.bat missing' }
+          if (-not (Test-Path '.\start.bat')) { throw 'start.bat missing' }
+
   docker:
     name: Container builds
     runs-on: ubuntu-latest
