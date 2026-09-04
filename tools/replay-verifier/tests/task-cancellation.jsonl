@@ -1,0 +1,10 @@
+{"id":1,"type":"workflow.created","workflow_id":"wf-task-cancel","at":"2026-01-01T00:00:00Z","data":{"name":"task-cancel-test"}}
+{"id":2,"type":"workflow.started","workflow_id":"wf-task-cancel","at":"2026-01-01T00:00:00.100Z"}
+{"id":3,"type":"task.ready","workflow_id":"wf-task-cancel","task_id":"a","at":"2026-01-01T00:00:00.200Z"}
+{"id":4,"type":"task.ready","workflow_id":"wf-task-cancel","task_id":"b","at":"2026-01-01T00:00:00.250Z"}
+{"id":5,"type":"worker.registered","worker_id":"worker-1","at":"2026-01-01T00:00:00.300Z","data":{"name":"worker"}}
+{"id":6,"type":"task.leased","workflow_id":"wf-task-cancel","task_id":"a","worker_id":"worker-1","at":"2026-01-01T00:00:00.400Z","data":{"attempt":"1"}}
+{"id":7,"type":"task.started","workflow_id":"wf-task-cancel","task_id":"a","worker_id":"worker-1","at":"2026-01-01T00:00:00.500Z"}
+{"id":8,"type":"task.cancelled","workflow_id":"wf-task-cancel","task_id":"a","at":"2026-01-01T00:00:00.600Z"}
+{"id":9,"type":"task.cancelled","workflow_id":"wf-task-cancel","task_id":"b","at":"2026-01-01T00:00:00.650Z"}
+{"id":10,"type":"workflow.cancelled","workflow_id":"wf-task-cancel","at":"2026-01-01T00:00:00.700Z"}
