@@ -1,7 +1,7 @@
 SHELL := /bin/sh
 .DEFAULT_GOAL := help
 
-.PHONY: help check fmt test test-go test-rust test-python test-typescript test-cpp \
+.PHONY: help check fmt test test-go test-rust test-python test-typescript test-cpp test-java \
         build build-go build-rust build-typescript build-cpp run docker-up docker-down clean
 
 help:
@@ -18,27 +18,39 @@ help:
 	  '  make clean             remove local build outputs'
 
 check: test
-	@command -v go >/dev/null 2>&1 && (cd coordinator && go vet ./...) || true
-	@command -v cargo >/dev/null 2>&1 && (cd worker && cargo clippy --all-targets -- -D warnings) || true
-	@command -v python3 >/dev/null 2>&1 && python3 -m compileall -q sdk/python/src || true
-	@command -v npm >/dev/null 2>&1 && (cd sdk/typescript && npm run check) || true
+	@if command -v go >/dev/null 2>&1; then cd coordinator && go vet ./...; else echo 'skip: go not installed'; fi
+	@if command -v cargo >/dev/null 2>&1; then cd worker && cargo clippy --all-targets --all-features -- -D warnings; else echo 'skip: cargo not installed'; fi
+	@if command -v python3 >/dev/null 2>&1; then python3 -m compileall -q sdk/python/src tools/chaos_lab; else echo 'skip: python3 not installed'; fi
+	@if command -v npm >/dev/null 2>&1; then cd sdk/typescript && npm run check; else echo 'skip: npm not installed'; fi
 
-test: test-go test-rust test-python test-typescript test-cpp
+test: test-go test-rust test-python test-typescript test-cpp test-java
 
 test-go:
-	@command -v go >/dev/null 2>&1 && (cd coordinator && go test ./...) || echo 'skip: go not installed'
+	@if command -v go >/dev/null 2>&1; then cd coordinator && go test ./...; else echo 'skip: go not installed'; fi
 
 test-rust:
-	@command -v cargo >/dev/null 2>&1 && (cd worker && cargo test) || echo 'skip: cargo not installed'
+	@if command -v cargo >/dev/null 2>&1; then cd worker && cargo test --all-features; else echo 'skip: cargo not installed'; fi
 
 test-python:
-	@command -v python3 >/dev/null 2>&1 && python3 -m unittest discover -s sdk/python/tests -v || echo 'skip: python3 not installed'
+	@if command -v python3 >/dev/null 2>&1; then \
+		PYTHONPATH=sdk/python/src python3 -m unittest discover -s sdk/python/tests -v && \
+		PYTHONPATH=sdk/python/src python3 -m unittest discover -s tools/chaos_lab/tests -v; \
+	else echo 'skip: python3 not installed'; fi
 
 test-typescript:
 	@if command -v npm >/dev/null 2>&1; then cd sdk/typescript && npm install --ignore-scripts && npm run check; else echo 'skip: npm not installed'; fi
 
 test-cpp:
 	@if command -v cmake >/dev/null 2>&1; then cmake -S simulator -B .build/simulator -DCMAKE_BUILD_TYPE=Release && cmake --build .build/simulator && ctest --test-dir .build/simulator --output-on-failure; else echo 'skip: cmake not installed'; fi
+
+test-java:
+	@if command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then \
+		mkdir -p .build/replay-verifier && \
+		javac --release 21 -Xlint:all -Werror -d .build/replay-verifier \
+			tools/replay-verifier/src/main/java/dev/helixgrid/verifier/Json.java \
+			tools/replay-verifier/src/main/java/dev/helixgrid/verifier/Main.java && \
+		java -cp .build/replay-verifier dev.helixgrid.verifier.Main --help >/dev/null; \
+	else echo 'skip: Java 21 toolchain not installed'; fi
 
 build: build-go build-rust build-typescript build-cpp
 
