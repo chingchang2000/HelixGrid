@@ -343,8 +343,8 @@ async fn main() -> Result<()> {
     info!("worker stopping; waiting for active tasks");
     let drain_deadline = Instant::now() + Duration::from_secs(20);
     while !tasks.is_empty() && Instant::now() < drain_deadline {
-        if let Some(result) = tasks.join_next().await {
-            if let Err(e) = result { warn!(error=%e, "executor join failed during shutdown"); }
+        if let Some(Err(err)) = tasks.join_next().await {
+            warn!(error=%err, "executor join failed during shutdown");
         }
     }
     tasks.abort_all();
@@ -390,7 +390,7 @@ async fn heartbeat_loop(api: Arc<Api>, worker_id: String, every: Duration, shutd
 
 async fn run_lease(api: Arc<Api>, lease: Lease, renew_every: Duration, shutdown: CancellationToken) -> Result<()> {
     let token = lease.token.clone();
-    info!(workflow_id=%lease.workflow_id, task_id=%lease.task_id, attempt=lease.attempt, expires_at=%lease.expires_at, "lease acquired");
+    info!(workflow_id=%lease.workflow_id, task_id=%lease.task_id, worker_id=%lease.worker_id, attempt=lease.attempt, expires_at=%lease.expires_at, "lease acquired");
     api.start(&token).await.context("failed to acknowledge lease start")?;
 
     let lease_cancel = CancellationToken::new();
@@ -475,7 +475,7 @@ async fn execute_task(api: Arc<Api>, lease: &Lease, shutdown: CancellationToken)
         tokio::select! {
             _ = shutdown.cancelled() => {
                 let _ = child.kill().await;
-                return Ok::<ExecutionResult, anyhow::Error>(ExecutionResult { exit_code: 130, error: "worker shutdown".into() });
+                Ok::<ExecutionResult, anyhow::Error>(ExecutionResult { exit_code: 130, error: "worker shutdown".into() })
             }
             status = child.wait() => {
                 let status = status.context("failed waiting for child")?;
