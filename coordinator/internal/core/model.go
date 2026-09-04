@@ -3,15 +3,47 @@ package core
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type WorkflowState string
 type TaskState string
 type EventType string
+
+const (
+	maxWorkflowNameChars  = 200
+	maxTaskIDChars        = 200
+	maxCommandArgs        = 4096
+	maxCommandArgChars    = 65536
+	maxStringMapKeyChars  = 128
+	maxStringMapValueChars = 4096
+	maxMetadataProperties = 4096
+	maxEnvProperties      = 4096
+	maxLabelProperties    = 128
+	maxRetryBaseDelayMS   = 3_600_000
+	maxRetryDelayMS       = 86_400_000
+)
+
+var taskIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*package core
+
+import (
+	"errors"
+	"fmt"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+)
+
+)
+
 
 const (
 	WorkflowPending   WorkflowState = "PENDING"
@@ -148,11 +180,20 @@ func NormalizeRetry(p RetryPolicy) RetryPolicy {
 	if p.MaxAttempts <= 0 {
 		p.MaxAttempts = 1
 	}
+	if p.MaxAttempts > 100 {
+		p.MaxAttempts = 100
+	}
 	if p.BaseDelayMS <= 0 {
 		p.BaseDelayMS = 250
 	}
+	if p.BaseDelayMS > maxRetryBaseDelayMS {
+		p.BaseDelayMS = maxRetryBaseDelayMS
+	}
 	if p.MaxDelayMS <= 0 {
 		p.MaxDelayMS = 30_000
+	}
+	if p.MaxDelayMS > maxRetryDelayMS {
+		p.MaxDelayMS = maxRetryDelayMS
 	}
 	if p.MaxDelayMS < p.BaseDelayMS {
 		p.MaxDelayMS = p.BaseDelayMS
@@ -180,8 +221,15 @@ func RetryDelay(p RetryPolicy, attempt int) time.Duration {
 }
 
 func ValidateSpec(spec WorkflowSpec) ([]string, error) {
-	if strings.TrimSpace(spec.Name) == "" {
+	name := strings.TrimSpace(spec.Name)
+	if name == "" {
 		return nil, errors.New("workflow name is required")
+	}
+	if utf8.RuneCountInString(spec.Name) > maxWorkflowNameChars {
+		return nil, errors.New("workflow name exceeds 200 characters")
+	}
+	if err := validateStringMap("workflow metadata", spec.Metadata, maxMetadataProperties); err != nil {
+		return nil, err
 	}
 	if len(spec.Tasks) == 0 {
 		return nil, errors.New("workflow must contain at least one task")
@@ -196,17 +244,46 @@ func ValidateSpec(spec WorkflowSpec) ([]string, error) {
 		if strings.TrimSpace(t.ID) == "" {
 			return nil, fmt.Errorf("task %d has empty id", i)
 		}
+		if utf8.RuneCountInString(t.ID) > maxTaskIDChars || !taskIDPattern.MatchString(t.ID) {
+			return nil, fmt.Errorf("task %q has invalid id", t.ID)
+		}
 		if _, exists := byID[t.ID]; exists {
 			return nil, fmt.Errorf("duplicate task id %q", t.ID)
 		}
 		if len(t.Command) == 0 || strings.TrimSpace(t.Command[0]) == "" {
 			return nil, fmt.Errorf("task %q has empty command", t.ID)
 		}
+		if len(t.Command) > maxCommandArgs {
+			return nil, fmt.Errorf("task %q exceeds command argument limit", t.ID)
+		}
+		for _, arg := range t.Command {
+			if utf8.RuneCountInString(arg) > maxCommandArgChars {
+				return nil, fmt.Errorf("task %q has command argument exceeding 65536 characters", t.ID)
+			}
+		}
+		if len(t.DependsOn) > 10_000 {
+			return nil, fmt.Errorf("task %q exceeds dependency limit", t.ID)
+		}
+		if err := validateStringMap("task "+t.ID+" env", t.Env, maxEnvProperties); err != nil {
+			return nil, err
+		}
+		if err := validateStringMap("task "+t.ID+" labels", t.Labels, maxLabelProperties); err != nil {
+			return nil, err
+		}
 		if t.TimeoutSeconds < 0 || t.TimeoutSeconds > 86_400 {
 			return nil, fmt.Errorf("task %q has invalid timeout", t.ID)
 		}
 		if t.Retry.MaxAttempts < 0 || t.Retry.MaxAttempts > 100 {
 			return nil, fmt.Errorf("task %q has invalid max_attempts", t.ID)
+		}
+		if t.Retry.BaseDelayMS < 0 || t.Retry.BaseDelayMS > maxRetryBaseDelayMS {
+			return nil, fmt.Errorf("task %q has invalid base_delay_ms", t.ID)
+		}
+		if t.Retry.MaxDelayMS < 0 || t.Retry.MaxDelayMS > maxRetryDelayMS {
+			return nil, fmt.Errorf("task %q has invalid max_delay_ms", t.ID)
+		}
+		if t.Retry.BaseDelayMS > 0 && t.Retry.MaxDelayMS > 0 && t.Retry.MaxDelayMS < t.Retry.BaseDelayMS {
+			return nil, fmt.Errorf("task %q has max_delay_ms smaller than base_delay_ms", t.ID)
 		}
 		byID[t.ID] = t
 	}
@@ -260,6 +337,21 @@ func ValidateSpec(spec WorkflowSpec) ([]string, error) {
 		return nil, errors.New("workflow graph contains a dependency cycle")
 	}
 	return order, nil
+}
+
+func validateStringMap(name string, values map[string]string, maxProperties int) error {
+	if len(values) > maxProperties {
+		return fmt.Errorf("%s exceeds property limit", name)
+	}
+	for key, value := range values {
+		if strings.TrimSpace(key) == "" || utf8.RuneCountInString(key) > maxStringMapKeyChars {
+			return fmt.Errorf("%s contains invalid key %q", name, key)
+		}
+		if utf8.RuneCountInString(value) > maxStringMapValueChars {
+			return fmt.Errorf("%s value for %q exceeds 4096 characters", name, key)
+		}
+	}
+	return nil
 }
 
 func NewWorkflow(id string, spec WorkflowSpec, now time.Time) (*Workflow, error) {
@@ -415,16 +507,37 @@ func (b *EventBus) Replay(workflowID string, after int64) []Event {
 }
 
 func (b *EventBus) Subscribe(buffer int) (int, <-chan Event, func()) {
-	if buffer <= 0 { buffer = 128 }
+	id, _, ch, cancel := b.SubscribeReplay("", 0, buffer)
+	return id, ch, cancel
+}
+
+// SubscribeReplay atomically snapshots replayable events and installs a live
+// subscription under the same lock. That removes the replay/subscribe race where
+// an event could otherwise be published between the two operations and disappear
+// from an SSE client's view.
+func (b *EventBus) SubscribeReplay(workflowID string, after int64, buffer int) (int, []Event, <-chan Event, func()) {
+	if buffer <= 0 {
+		buffer = 128
+	}
 	b.mu.Lock()
-	id := b.nextSub; b.nextSub++
+	id := b.nextSub
+	b.nextSub++
 	ch := make(chan Event, buffer)
 	b.subs[id] = ch
+	replay := make([]Event, 0)
+	for _, e := range b.events {
+		if e.ID > after && (workflowID == "" || e.WorkflowID == workflowID) {
+			replay = append(replay, e)
+		}
+	}
 	b.mu.Unlock()
 	cancel := func() {
 		b.mu.Lock()
-		if c, ok := b.subs[id]; ok { delete(b.subs, id); close(c) }
+		if c, ok := b.subs[id]; ok {
+			delete(b.subs, id)
+			close(c)
+		}
 		b.mu.Unlock()
 	}
-	return id, ch, cancel
+	return id, replay, ch, cancel
 }
