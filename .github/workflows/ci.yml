@@ -227,19 +227,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Parse Windows installer PowerShell
+      - name: Parse Windows installer and updater PowerShell
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path '.\installer\windows-install.ps1'),
-            [ref]$tokens,
-            [ref]$errors
-          ) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | ForEach-Object { Write-Error $_.Message }
-            exit 1
+          foreach ($file in @('.\installer\windows-install.ps1', '.\updater\windows-update.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "$file : $($_.Message)" }
+              exit 1
+            }
           }
       - name: Compile Windows dashboard and file tools
         run: |
@@ -253,6 +255,8 @@ jobs:
         run: |
           if (-not (Test-Path '.\windows-install.bat')) { throw 'windows-install.bat missing' }
           if (-not (Test-Path '.\start.bat')) { throw 'start.bat missing' }
+          if (-not (Test-Path '.\update.bat')) { throw 'update.bat missing' }
+          if (-not (Test-Path '.\updater\windows-update.ps1')) { throw 'windows updater missing' }
 
   docker:
     name: Container builds
