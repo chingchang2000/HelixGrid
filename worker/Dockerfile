@@ -6,9 +6,11 @@ RUN cargo build --release --locked || cargo build --release
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tini \
+    && apt-get install -y --no-install-recommends ca-certificates tini python3 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/helix-worker /usr/local/bin/helix-worker
-RUN useradd --system --uid 10001 --create-home helix
+COPY file_tools.py /opt/helix/file_tools.py
+RUN chmod 0555 /opt/helix/file_tools.py \
+    && useradd --system --uid 10001 --create-home helix
 USER helix
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/helix-worker"]
