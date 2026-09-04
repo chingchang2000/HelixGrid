@@ -5,7 +5,7 @@ use std::{collections::HashMap, env, process::Stdio, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
-    sync::{Semaphore, mpsc},
+    sync::{RwLock, Semaphore, mpsc},
     task::JoinSet,
     time::{Instant, MissedTickBehavior, interval, sleep, timeout},
 };
@@ -39,15 +39,28 @@ impl Config {
             return Err(anyhow!("HELIX_CONCURRENCY must be between 1 and 256"));
         }
         let labels = parse_labels(&env::var("HELIX_LABELS").unwrap_or_default())?;
+        let poll_ms = positive_setting("HELIX_POLL_MS", parse_env("HELIX_POLL_MS", 400u64)?)?;
+        let heartbeat_seconds = positive_setting(
+            "HELIX_HEARTBEAT_SECONDS",
+            parse_env("HELIX_HEARTBEAT_SECONDS", 10u64)?,
+        )?;
+        let lease_renew_seconds = positive_setting(
+            "HELIX_LEASE_RENEW_SECONDS",
+            parse_env("HELIX_LEASE_RENEW_SECONDS", 6u64)?,
+        )?;
+        let request_timeout_seconds = positive_setting(
+            "HELIX_HTTP_TIMEOUT_SECONDS",
+            parse_env("HELIX_HTTP_TIMEOUT_SECONDS", 15u64)?,
+        )?;
         Ok(Self {
             coordinator,
             worker_name,
             version: env!("CARGO_PKG_VERSION").into(),
             concurrency,
-            poll_interval: Duration::from_millis(parse_env("HELIX_POLL_MS", 400u64)?),
-            heartbeat_interval: Duration::from_secs(parse_env("HELIX_HEARTBEAT_SECONDS", 10u64)?),
-            lease_renew_interval: Duration::from_secs(parse_env("HELIX_LEASE_RENEW_SECONDS", 6u64)?),
-            request_timeout: Duration::from_secs(parse_env("HELIX_HTTP_TIMEOUT_SECONDS", 15u64)?),
+            poll_interval: Duration::from_millis(poll_ms),
+            heartbeat_interval: Duration::from_secs(heartbeat_seconds),
+            lease_renew_interval: Duration::from_secs(lease_renew_seconds),
+            request_timeout: Duration::from_secs(request_timeout_seconds),
             labels,
         })
     }
@@ -64,6 +77,13 @@ where
             .map_err(|e| anyhow!("invalid {key}: {e}")),
         Err(_) => Ok(default),
     }
+}
+
+fn positive_setting(key: &str, value: u64) -> Result<u64> {
+    if value == 0 {
+        return Err(anyhow!("{key} must be greater than zero"));
+    }
+    Ok(value)
 }
 
 fn parse_labels(raw: &str) -> Result<HashMap<String, String>> {
@@ -101,7 +121,7 @@ struct RegisterWorkerRequest<'a> {
     capacity: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct Worker {
     id: String,
     name: String,
@@ -162,6 +182,27 @@ struct CompleteRequest<'a> {
     #[serde(skip_serializing_if = "str::is_empty")]
     error: &'a str,
 }
+
+#[derive(Debug)]
+struct CoordinatorHttpError {
+    status: StatusCode,
+    body: String,
+}
+
+impl std::fmt::Display for CoordinatorHttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "coordinator returned {}: {}", self.status, self.body)
+    }
+}
+
+impl std::error::Error for CoordinatorHttpError {}
+
+fn coordinator_status(error: &anyhow::Error) -> Option<StatusCode> {
+    error
+        .downcast_ref::<CoordinatorHttpError>()
+        .map(|http_error| http_error.status)
+}
+
 
 impl Api {
     fn new(config: &Config) -> Result<Self> {
@@ -246,8 +287,11 @@ async fn decode_response<T: DeserializeOwned>(response: reqwest::Response) -> Re
 
 async fn response_error(response: reqwest::Response) -> anyhow::Error {
     let status = response.status();
-    let text = response.text().await.unwrap_or_else(|_| "<unreadable body>".into());
-    anyhow!("coordinator returned {status}: {text}")
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "<unreadable body>".into());
+    anyhow::Error::new(CoordinatorHttpError { status, body })
 }
 
 #[derive(Debug)]
@@ -273,22 +317,31 @@ async fn main() -> Result<()> {
     let api = Arc::new(Api::new(&config)?);
     let shutdown = CancellationToken::new();
 
-    info!(coordinator=%config.coordinator, concurrency=config.concurrency, "starting worker");
-    let worker = register_with_retry(&api, &config, &shutdown).await?;
-    info!(worker_id=%worker.id, worker_name=%worker.name, capacity=worker.capacity, "worker registered");
-
-    let heartbeat_shutdown = shutdown.clone();
-    let heartbeat_api = api.clone();
-    let heartbeat_id = worker.id.clone();
-    let heartbeat_every = config.heartbeat_interval;
-    let heartbeat_task = tokio::spawn(async move {
-        heartbeat_loop(heartbeat_api, heartbeat_id, heartbeat_every, heartbeat_shutdown).await;
-    });
-
     let signal_shutdown = shutdown.clone();
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;
         signal_shutdown.cancel();
+    });
+
+    info!(coordinator=%config.coordinator, concurrency=config.concurrency, "starting worker");
+    let worker = register_with_retry(&api, &config, &shutdown).await?;
+    info!(worker_id=%worker.id, worker_name=%worker.name, capacity=worker.capacity, "worker registered");
+    let worker_session = Arc::new(RwLock::new(worker));
+
+    let heartbeat_shutdown = shutdown.clone();
+    let heartbeat_api = api.clone();
+    let heartbeat_config = config.clone();
+    let heartbeat_session = worker_session.clone();
+    let heartbeat_every = config.heartbeat_interval;
+    let heartbeat_task = tokio::spawn(async move {
+        heartbeat_loop(
+            heartbeat_api,
+            heartbeat_config,
+            heartbeat_session,
+            heartbeat_every,
+            heartbeat_shutdown,
+        )
+        .await;
     });
 
     let semaphore = Arc::new(Semaphore::new(config.concurrency));
@@ -308,7 +361,8 @@ async fn main() -> Result<()> {
             permit = semaphore.clone().acquire_owned() => permit.context("semaphore closed")?,
         };
 
-        match api.lease(&worker.id).await {
+        let worker_id = { worker_session.read().await.id.clone() };
+        match api.lease(&worker_id).await {
             Ok(Some(lease)) => {
                 backoff = Duration::from_millis(100);
                 let api = api.clone();
@@ -370,7 +424,13 @@ async fn register_with_retry(api: &Api, config: &Config, shutdown: &Cancellation
     }
 }
 
-async fn heartbeat_loop(api: Arc<Api>, worker_id: String, every: Duration, shutdown: CancellationToken) {
+async fn heartbeat_loop(
+    api: Arc<Api>,
+    config: Arc<Config>,
+    session: Arc<RwLock<Worker>>,
+    every: Duration,
+    shutdown: CancellationToken,
+) {
     let mut ticker = interval(every);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     ticker.tick().await;
@@ -378,10 +438,28 @@ async fn heartbeat_loop(api: Arc<Api>, worker_id: String, every: Duration, shutd
         tokio::select! {
             _ = shutdown.cancelled() => return,
             _ = ticker.tick() => {
-                if let Err(err) = api.heartbeat(&worker_id).await {
-                    warn!(error=%err, worker_id=%worker_id, "heartbeat failed");
-                } else {
-                    debug!(worker_id=%worker_id, "heartbeat sent");
+                let worker_id = { session.read().await.id.clone() };
+                match api.heartbeat(&worker_id).await {
+                    Ok(()) => debug!(worker_id=%worker_id, "heartbeat sent"),
+                    Err(err) => {
+                        warn!(error=%err, worker_id=%worker_id, "heartbeat failed");
+                        if coordinator_status(&err) == Some(StatusCode::NOT_FOUND) {
+                            match api.register(&config).await {
+                                Ok(replacement) => {
+                                    let replacement_id = replacement.id.clone();
+                                    *session.write().await = replacement;
+                                    info!(
+                                        old_worker_id=%worker_id,
+                                        worker_id=%replacement_id,
+                                        "coordinator forgot worker; registered a fresh worker session"
+                                    );
+                                }
+                                Err(register_err) => {
+                                    warn!(error=%register_err, "worker re-registration failed");
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -490,8 +568,14 @@ async fn execute_task(api: Arc<Api>, lease: &Lease, shutdown: CancellationToken)
         match timeout(Duration::from_secs(spec.timeout_seconds), wait_future).await {
             Ok(result) => result?,
             Err(_) => {
-                // kill_on_drop ensures process cleanup if timeout wins and the wait future is dropped.
-                ExecutionResult { exit_code: 124, error: format!("task timed out after {} seconds", spec.timeout_seconds) }
+                child
+                    .kill()
+                    .await
+                    .context("failed to kill process after task timeout")?;
+                ExecutionResult {
+                    exit_code: 124,
+                    error: format!("task timed out after {} seconds", spec.timeout_seconds),
+                }
             }
         }
     } else {
@@ -556,5 +640,21 @@ mod tests {
         assert!(parse_labels("linux").is_err());
         assert!(parse_labels("=value").is_err());
         assert!(parse_labels("key=").is_err());
+    }
+
+    #[test]
+    fn rejects_zero_timing_settings() {
+        assert!(positive_setting("HELIX_POLL_MS", 0).is_err());
+        assert!(positive_setting("HELIX_HEARTBEAT_SECONDS", 0).is_err());
+        assert_eq!(positive_setting("HELIX_POLL_MS", 1).unwrap(), 1);
+    }
+
+    #[test]
+    fn preserves_http_status_for_recovery_decisions() {
+        let error = anyhow::Error::new(CoordinatorHttpError {
+            status: StatusCode::NOT_FOUND,
+            body: "missing".into(),
+        });
+        assert_eq!(coordinator_status(&error), Some(StatusCode::NOT_FOUND));
     }
 }
