@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 title HelixGrid Windows Installer
 
-net session >nul 2>&1
+powershell.exe -NoProfile -Command "if ((New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 0 } else { exit 1 }" >nul 2>&1
 if not "%errorlevel%"=="0" (
   powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs"
   exit /b
