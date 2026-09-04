@@ -1,0 +1,7 @@
+{"id":1,"type":"workflow.created","workflow_id":"wf-expiry","at":"2026-01-01T00:00:00Z","data":{"name":"expiry-test"}}
+{"id":2,"type":"workflow.started","workflow_id":"wf-expiry","at":"2026-01-01T00:00:00.100Z"}
+{"id":3,"type":"task.ready","workflow_id":"wf-expiry","task_id":"a","at":"2026-01-01T00:00:00.200Z"}
+{"id":4,"type":"worker.registered","worker_id":"worker-1","at":"2026-01-01T00:00:00.300Z","data":{"name":"worker"}}
+{"id":5,"type":"task.leased","workflow_id":"wf-expiry","task_id":"a","worker_id":"worker-1","at":"2026-01-01T00:00:00.400Z","data":{"attempt":"1"}}
+{"id":6,"type":"task.started","workflow_id":"wf-expiry","task_id":"a","worker_id":"worker-1","at":"2026-01-01T00:00:00.500Z"}
+{"id":7,"type":"lease.expired","workflow_id":"wf-expiry","task_id":"a","worker_id":"worker-1","at":"2026-01-01T00:00:20.500Z"}
