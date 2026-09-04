@@ -48,7 +48,7 @@ CREATE TYPE event_type AS ENUM (
 CREATE TABLE workflows (
     id              text PRIMARY KEY,
     name            text NOT NULL CHECK (length(btrim(name)) > 0),
-    metadata        jsonb NOT NULL DEFAULT '{}'::jsonb,
+    metadata        jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(metadata) = 'object'),
     state           workflow_state NOT NULL DEFAULT 'PENDING',
     idempotency_key text UNIQUE,
     created_at      timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -58,7 +58,7 @@ CREATE TABLE workflows (
     CONSTRAINT workflow_terminal_finished_ck CHECK (
         (state IN ('SUCCEEDED', 'FAILED', 'CANCELLED') AND finished_at IS NOT NULL)
         OR
-        (state IN ('PENDING', 'RUNNING'))
+        (state IN ('PENDING', 'RUNNING') AND finished_at IS NULL)
     )
 );
 
@@ -66,13 +66,17 @@ CREATE TABLE tasks (
     workflow_id       text NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
     task_id           text NOT NULL,
     ordinal           integer NOT NULL CHECK (ordinal >= 0),
-    command           jsonb NOT NULL CHECK (jsonb_typeof(command) = 'array'),
-    env               jsonb NOT NULL DEFAULT '{}'::jsonb,
-    labels            jsonb NOT NULL DEFAULT '{}'::jsonb,
+    command           jsonb NOT NULL CHECK (
+        jsonb_typeof(command) = 'array' AND jsonb_array_length(command) > 0
+    ),
+    env               jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(env) = 'object'),
+    labels            jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(labels) = 'object'),
     timeout_seconds   integer NOT NULL DEFAULT 0 CHECK (timeout_seconds BETWEEN 0 AND 86400),
     max_attempts      integer NOT NULL DEFAULT 1 CHECK (max_attempts BETWEEN 1 AND 100),
-    base_delay_ms     integer NOT NULL DEFAULT 250 CHECK (base_delay_ms > 0),
-    max_delay_ms      integer NOT NULL DEFAULT 30000 CHECK (max_delay_ms >= base_delay_ms),
+    base_delay_ms     integer NOT NULL DEFAULT 250 CHECK (base_delay_ms BETWEEN 1 AND 3600000),
+    max_delay_ms      integer NOT NULL DEFAULT 30000 CHECK (
+        max_delay_ms BETWEEN base_delay_ms AND 86400000
+    ),
     state             task_state NOT NULL DEFAULT 'PENDING',
     attempt           integer NOT NULL DEFAULT 0 CHECK (attempt >= 0),
     next_retry_at     timestamptz,
@@ -102,9 +106,9 @@ CREATE TABLE task_dependencies (
 
 CREATE TABLE workers (
     id                  text PRIMARY KEY,
-    name                text NOT NULL,
-    version             text NOT NULL,
-    labels              jsonb NOT NULL DEFAULT '{}'::jsonb,
+    name                text NOT NULL CHECK (length(btrim(name)) > 0),
+    version             text NOT NULL CHECK (length(btrim(version)) > 0),
+    labels              jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(labels) = 'object'),
     capacity            integer NOT NULL CHECK (capacity BETWEEN 1 AND 256),
     active_leases       integer NOT NULL DEFAULT 0 CHECK (active_leases >= 0),
     registered_at       timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -232,9 +236,14 @@ DECLARE
     candidate record;
     worker_capacity integer;
     worker_active integer;
+    worker_labels jsonb;
 BEGIN
-    SELECT capacity, active_leases
-      INTO worker_capacity, worker_active
+    IF p_lease_seconds <= 0 THEN
+        RAISE EXCEPTION 'lease duration must be positive';
+    END IF;
+
+    SELECT capacity, active_leases, labels
+      INTO worker_capacity, worker_active, worker_labels
       FROM workers
      WHERE id = p_worker_id
        AND last_heartbeat > clock_timestamp() - interval '45 seconds'
@@ -254,6 +263,7 @@ BEGIN
       JOIN workflows w ON w.id = t.workflow_id
      WHERE t.state = 'READY'
        AND w.state IN ('PENDING', 'RUNNING')
+       AND t.labels <@ worker_labels
        AND NOT EXISTS (
             SELECT 1
               FROM task_dependencies d
