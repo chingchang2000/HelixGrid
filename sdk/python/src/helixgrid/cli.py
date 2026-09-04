@@ -75,7 +75,9 @@ def command_submit(client: HelixClient, args: argparse.Namespace) -> int:
         print_json(workflow)
     else:
         print_workflow(workflow, detailed=True)
-    return 0 if workflow.get("state") != "FAILED" else 2
+    if args.wait:
+        return 0 if workflow.get("state") == "SUCCEEDED" else 2
+    return 0
 
 
 def command_list(client: HelixClient, args: argparse.Namespace) -> int:
