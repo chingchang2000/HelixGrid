@@ -163,6 +163,7 @@ func descendantsCount(order []string, children map[string][]string) map[string]i
 			for descendant := range sets[child] {
 				set[descendant] = struct{}{}
 			}
+		}
 		sets[id] = set
 	}
 	result := make(map[string]int, len(order))
