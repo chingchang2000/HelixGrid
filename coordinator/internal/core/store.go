@@ -57,7 +57,9 @@ func (s *Store) Events() *EventBus { return s.events }
 
 func newID(prefix string) string {
 	buf := make([]byte, 12)
-	_, _ = rand.Read(buf)
+	if _, err := rand.Read(buf); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
 	return prefix + "_" + hex.EncodeToString(buf)
 }
 
@@ -97,15 +99,44 @@ func (s *Store) ListWorkflows() []*Workflow {
 }
 
 func (s *Store) CancelWorkflow(id string) (*Workflow, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	w, ok := s.workflows[id]
-	if !ok { return nil, errors.New("workflow not found") }
+	if !ok {
+		return nil, errors.New("workflow not found")
+	}
 	before := w.State
 	now := s.clock()
+
+	cancelledTasks := make([]string, 0)
+	if !isTerminalWorkflowState(w.State) {
+		for _, taskID := range w.Order {
+			state := w.Runtime[taskID].State
+			if state != TaskSucceeded && state != TaskFailed && state != TaskCancelled {
+				cancelledTasks = append(cancelledTasks, taskID)
+			}
+		}
+	}
+
 	w.Cancel(now)
 	if before != w.State {
 		for token, lease := range s.leases {
-			if lease.WorkflowID == id { delete(s.leases, token) }
+			if lease.WorkflowID != id {
+				continue
+			}
+			delete(s.leases, token)
+			if worker := s.workers[lease.WorkerID]; worker != nil && worker.ActiveLeases > 0 {
+				worker.ActiveLeases--
+			}
+			if rt := w.Runtime[lease.TaskID]; rt != nil && rt.LeaseToken == token {
+				rt.LeaseToken = ""
+				rt.LeaseOwner = ""
+				rt.LeaseUntil = nil
+			}
+		}
+		for _, taskID := range cancelledTasks {
+			s.events.Publish(Event{Type: EventTaskCancelled, WorkflowID: id, TaskID: taskID, At: now})
 		}
 		s.events.Publish(Event{Type: EventWorkflowCancelled, WorkflowID: id, At: now})
 	}
@@ -171,7 +202,10 @@ func (s *Store) LeaseNext(workerID string) (*Lease, error) {
 			rt.Attempt++
 			rt.LeaseToken, rt.LeaseOwner, rt.LeaseUntil = token, workerID, &expires
 			worker.ActiveLeases++
-			lease := Lease{Token: token, WorkflowID: w.ID, TaskID: taskID, WorkerID: workerID, Attempt: rt.Attempt, ExpiresAt: expires, Spec: spec}
+			lease := Lease{
+				Token: token, WorkflowID: w.ID, TaskID: taskID, WorkerID: workerID,
+				Attempt: rt.Attempt, ExpiresAt: expires, Spec: cloneTaskSpec(spec),
+			}
 			s.leases[token] = lease
 			s.events.Publish(Event{Type: EventTaskLeased, WorkflowID: w.ID, TaskID: taskID, WorkerID: workerID, At: now, Data: map[string]string{"attempt": fmt.Sprint(rt.Attempt)}})
 			copy := lease
@@ -186,7 +220,10 @@ func (s *Store) StartLease(token string) error {
 	lease, ok := s.leases[token]
 	if !ok { return errors.New("lease not found") }
 	now := s.clock()
-	if now.After(lease.ExpiresAt) { s.expireLeaseLocked(token, lease, now); return errors.New("lease expired") }
+	if !now.Before(lease.ExpiresAt) {
+		s.expireLeaseLocked(token, lease, now)
+		return errors.New("lease expired")
+	}
 	w := s.workflows[lease.WorkflowID]
 	rt := w.Runtime[lease.TaskID]
 	if rt.LeaseToken != token { return errors.New("stale lease") }
@@ -203,28 +240,49 @@ func (s *Store) RenewLease(token string) (*Lease, error) {
 	lease, ok := s.leases[token]
 	if !ok { return nil, errors.New("lease not found") }
 	now := s.clock()
-	if now.After(lease.ExpiresAt) { s.expireLeaseLocked(token, lease, now); return nil, errors.New("lease expired") }
+	if !now.Before(lease.ExpiresAt) {
+		s.expireLeaseLocked(token, lease, now)
+		return nil, errors.New("lease expired")
+	}
 	lease.ExpiresAt = now.Add(s.leaseDuration)
 	s.leases[token] = lease
 	if w := s.workflows[lease.WorkflowID]; w != nil {
 		if rt := w.Runtime[lease.TaskID]; rt != nil { rt.LeaseUntil = ptrTime(lease.ExpiresAt) }
 	}
 	copy := lease
+	copy.Spec = cloneTaskSpec(lease.Spec)
 	return &copy, nil
 }
 
 func (s *Store) AppendLog(token, stream, text string) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	lease, ok := s.leases[token]
-	if !ok { return errors.New("lease not found") }
+	if !ok {
+		return errors.New("lease not found")
+	}
 	now := s.clock()
-	if now.After(lease.ExpiresAt) { s.expireLeaseLocked(token, lease, now); return errors.New("lease expired") }
+	if !now.Before(lease.ExpiresAt) {
+		s.expireLeaseLocked(token, lease, now)
+		return errors.New("lease expired")
+	}
 	w := s.workflows[lease.WorkflowID]
 	rt := w.Runtime[lease.TaskID]
-	if rt.LeaseToken != token { return errors.New("stale lease") }
-	if len(text) > 64*1024 { return errors.New("log chunk too large") }
-	rt.OutputBytes += int64(len(text))
-	if rt.OutputBytes > 32*1024*1024 { return errors.New("task output limit exceeded") }
+	if rt.LeaseToken != token {
+		return errors.New("stale lease")
+	}
+	if stream != "stdout" && stream != "stderr" {
+		return errors.New("stream must be stdout or stderr")
+	}
+	size := int64(len(text))
+	if size > 64*1024 {
+		return errors.New("log chunk too large")
+	}
+	if rt.OutputBytes > 32*1024*1024-size {
+		return errors.New("task output limit exceeded")
+	}
+	rt.OutputBytes += size
 	s.events.Publish(Event{Type: EventTaskLog, WorkflowID: w.ID, TaskID: lease.TaskID, WorkerID: lease.WorkerID, At: now, Data: map[string]string{"stream": stream, "text": text}})
 	return nil
 }
@@ -234,7 +292,10 @@ func (s *Store) CompleteLease(token string, req CompleteRequest) (*Workflow, err
 	lease, ok := s.leases[token]
 	if !ok { return nil, errors.New("lease not found") }
 	now := s.clock()
-	if now.After(lease.ExpiresAt) { s.expireLeaseLocked(token, lease, now); return nil, errors.New("lease expired") }
+	if !now.Before(lease.ExpiresAt) {
+		s.expireLeaseLocked(token, lease, now)
+		return nil, errors.New("lease expired")
+	}
 	w := s.workflows[lease.WorkflowID]
 	rt := w.Runtime[lease.TaskID]
 	if rt.LeaseToken != token { return nil, errors.New("stale lease") }
@@ -305,6 +366,10 @@ func (s *Store) expireLeaseLocked(token string, lease Lease, now time.Time) {
 	}
 }
 
+func isTerminalWorkflowState(state WorkflowState) bool {
+	return state == WorkflowSucceeded || state == WorkflowFailed || state == WorkflowCancelled
+}
+
 func (s *Store) emitWorkflowTerminalLocked(w *Workflow, before WorkflowState, now time.Time) {
 	if w.State == before { return }
 	switch w.State {
@@ -319,19 +384,51 @@ func cloneWorker(w *Worker) *Worker {
 	copy := *w; copy.Labels = cloneMap(w.Labels); return &copy
 }
 
+func cloneTaskSpec(spec TaskSpec) TaskSpec {
+	spec.Command = append([]string(nil), spec.Command...)
+	spec.DependsOn = append([]string(nil), spec.DependsOn...)
+	spec.Env = cloneMap(spec.Env)
+	spec.Labels = cloneMap(spec.Labels)
+	return spec
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneIntPointer(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
 func cloneWorkflow(w *Workflow) *Workflow {
-	if w == nil { return nil }
+	if w == nil {
+		return nil
+	}
 	out := *w
 	out.Metadata = cloneMap(w.Metadata)
 	out.Order = append([]string(nil), w.Order...)
+	out.FinishedAt = cloneTimePointer(w.FinishedAt)
 	out.Tasks = make(map[string]TaskSpec, len(w.Tasks))
 	out.Runtime = make(map[string]*TaskRuntime, len(w.Runtime))
 	for id, spec := range w.Tasks {
-		spec.Command = append([]string(nil), spec.Command...)
-		spec.DependsOn = append([]string(nil), spec.DependsOn...)
-		spec.Env = cloneMap(spec.Env); spec.Labels = cloneMap(spec.Labels)
-		out.Tasks[id] = spec
+		out.Tasks[id] = cloneTaskSpec(spec)
 	}
-	for id, rt := range w.Runtime { copy := *rt; out.Runtime[id] = &copy }
+	for id, rt := range w.Runtime {
+		copy := *rt
+		copy.LeaseUntil = cloneTimePointer(rt.LeaseUntil)
+		copy.StartedAt = cloneTimePointer(rt.StartedAt)
+		copy.FinishedAt = cloneTimePointer(rt.FinishedAt)
+		copy.NextRetryAt = cloneTimePointer(rt.NextRetryAt)
+		copy.ExitCode = cloneIntPointer(rt.ExitCode)
+		out.Runtime[id] = &copy
+	}
 	return &out
 }
