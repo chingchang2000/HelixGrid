@@ -2,6 +2,8 @@
 
 Choose your language:
 
+- [Windows – one-click installer & dashboard](./WINDOWS-EASY-INSTALL.md)
+
 - [Dansk](./DA.md)
 - [English](./EN.md)
 - [Deutsch](./DE.md)
