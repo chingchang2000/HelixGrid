@@ -16,34 +16,20 @@ type TaskState string
 type EventType string
 
 const (
-	maxWorkflowNameChars  = 200
-	maxTaskIDChars        = 200
-	maxCommandArgs        = 4096
-	maxCommandArgChars    = 65536
-	maxStringMapKeyChars  = 128
+	maxWorkflowNameChars   = 200
+	maxTaskIDChars         = 200
+	maxCommandArgs         = 4096
+	maxCommandArgChars     = 65536
+	maxStringMapKeyChars   = 128
 	maxStringMapValueChars = 4096
-	maxMetadataProperties = 4096
-	maxEnvProperties      = 4096
-	maxLabelProperties    = 128
-	maxRetryBaseDelayMS   = 3_600_000
-	maxRetryDelayMS       = 86_400_000
+	maxMetadataProperties  = 4096
+	maxEnvProperties       = 4096
+	maxLabelProperties     = 128
+	maxRetryBaseDelayMS    = 3_600_000
+	maxRetryDelayMS        = 86_400_000
 )
 
-var taskIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*package core
-
-import (
-	"errors"
-	"fmt"
-	"regexp"
-	"sort"
-	"strings"
-	"sync"
-	"time"
-	"unicode/utf8"
-)
-
-)
-
+var taskIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
 
 const (
 	WorkflowPending   WorkflowState = "PENDING"
