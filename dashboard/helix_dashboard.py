@@ -248,7 +248,8 @@ class HelixDashboard(Tk):
         header.pack(fill="x")
         ttk.Label(header, text="HelixGrid", style="Title.TLabel").pack(side="left")
         ttk.Label(header, text="Windows Control Center", style="Subtitle.TLabel").pack(side="left", padx=(12, 0), pady=(13, 0))
-        ttk.Button(header, text="Opdater", command=self.refresh_status).pack(side="right")
+        ttk.Button(header, text="Opdater status", command=self.refresh_status).pack(side="right")
+        ttk.Button(header, text="Opdater HelixGrid", style="Accent.TButton", command=self.update_helixgrid).pack(side="right", padx=(0, 8))
 
         cards = ttk.Frame(root)
         cards.pack(fill="x", pady=(22, 18))
@@ -449,6 +450,27 @@ class HelixDashboard(Tk):
                 self._events.put(("idle", None))
 
         threading.Thread(target=runner, daemon=True).start()
+
+    def update_helixgrid(self) -> None:
+        updater = repo_root() / "update.bat"
+        if not updater.exists():
+            messagebox.showerror("HelixGrid", "update.bat blev ikke fundet. Kør windows-install.bat igen.")
+            return
+        if not messagebox.askyesno(
+            "Opdater HelixGrid",
+            "HelixGrid henter den nyeste version fra GitHub, opdaterer Docker og starter dashboardet igen.\n\nVil du fortsætte?",
+        ):
+            return
+        self.save_settings()
+        try:
+            subprocess.Popen(
+                ["cmd.exe", "/c", str(updater)],
+                cwd=repo_root(),
+            )
+        except OSError as exc:
+            messagebox.showerror("HelixGrid", f"Updateren kunne ikke startes:\n{exc}")
+            return
+        self.destroy()
 
     def ensure_started(self) -> None:
         if coordinator_online():
