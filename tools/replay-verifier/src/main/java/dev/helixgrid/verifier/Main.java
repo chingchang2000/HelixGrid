@@ -336,6 +336,21 @@ public final class Main {
             } else if (workflow.state == terminal) {
                 warn(event, "WORKFLOW_TERMINAL_DUPLICATE", "duplicate terminal workflow event " + terminal);
             }
+
+            // Coordinator cancellation is authoritative and releases all active leases.
+            // Older event streams may not contain one task.cancelled event per task, so
+            // replay cancellation semantics here as well to avoid false invariant errors.
+            if (terminal == WorkflowState.CANCELLED) {
+                for (var task : workflow.tasks.values()) {
+                    if (task.lease != null) {
+                        releaseLease(event, task, false);
+                    }
+                    if (!task.state.terminal()) {
+                        task.transition(TaskState.CANCELLED, event, this);
+                    }
+                }
+            }
+
             workflow.state = terminal;
             workflow.finishedAt = event.at();
             workflow.lastSequence = event.sequence();
@@ -463,7 +478,6 @@ public final class Main {
             }
             releaseLease(event, task, true);
             task.transition(TaskState.READY, event, this);
-            if (!event.workerId().isEmpty()) worker(event.workerId()).leasesExpired++;
         }
 
         private void releaseLease(Event event, TaskReplay task, boolean expiry) {
