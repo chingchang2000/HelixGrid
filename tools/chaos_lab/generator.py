@@ -184,7 +184,12 @@ class ScenarioGenerator:
         workflow = self.workflow()
         workers = self.workers(workflow)
         model = Model()
-        wf = model.add_workflow(workflow.name, workflow.tasks, metadata=workflow.metadata)
+        wf = model.add_workflow(
+            workflow.name,
+            workflow.tasks,
+            workflow_id=f"workflow-{self.seed}",
+            metadata=workflow.metadata,
+        )
         for worker_id, capacity, labels in workers:
             model.register_worker(
                 worker_id,
