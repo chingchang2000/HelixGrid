@@ -71,10 +71,6 @@ class WorkflowBuilderTests(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
     def test_rejects_protocol_invalid_task_fields(self) -> None:
         builder = WorkflowBuilder("x")
         with self.assertRaisesRegex(ValueError, "invalid task id"):
@@ -83,3 +79,7 @@ if __name__ == "__main__":
             builder.task("timeout", ["true"], timeout_seconds=100_000)
         with self.assertRaisesRegex(ValueError, "max_attempts"):
             builder.task("retry", ["true"], retry=RetryPolicy(max_attempts=101))
+
+
+if __name__ == "__main__":
+    unittest.main()
