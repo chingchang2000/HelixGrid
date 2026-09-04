@@ -275,7 +275,7 @@ public final class Main {
                 case "task.succeeded" -> taskCompleted(event, TaskState.SUCCEEDED);
                 case "task.failed" -> taskCompleted(event, TaskState.FAILED);
                 case "task.retry" -> taskRetry(event);
-                case "task.cancelled" -> taskCompleted(event, TaskState.CANCELLED);
+                case "task.cancelled" -> taskCancelled(event);
                 case "lease.expired" -> leaseExpired(event);
                 case "worker.registered" -> workerRegistered(event);
                 case "worker.heartbeat" -> workerHeartbeat(event);
@@ -360,6 +360,12 @@ public final class Main {
             var task = requireTask(event);
             if (state == TaskState.READY && task.lease != null) {
                 error(event, "TASK_READY_WITH_ACTIVE_LEASE", "task became READY while a lease was still active");
+            }
+            if (state == TaskState.READY && task.state == TaskState.READY && task.lease == null) {
+                // The coordinator intentionally repeats task.ready events as scheduler
+                // wakeups. They do not represent an invalid state transition.
+                task.lastSequence = event.sequence();
+                return;
             }
             task.transition(state, event, this);
         }
@@ -452,6 +458,25 @@ public final class Main {
             releaseLease(event, task, false);
             task.transition(terminal, event, this);
             if (!event.workerId().isEmpty()) worker(event.workerId()).completions++;
+        }
+
+        private void taskCancelled(Event event) {
+            var task = requireTask(event);
+            if (task.state == TaskState.CANCELLED) {
+                task.lastSequence = event.sequence();
+                return;
+            }
+            if (task.lease != null) {
+                if (!event.workerId().isEmpty() && !event.workerId().equals(task.lease.workerId)) {
+                    error(
+                            event,
+                            "CANCELLATION_WORKER_MISMATCH",
+                            "cancellation worker " + event.workerId()
+                                    + " differs from lease owner " + task.lease.workerId);
+                }
+                releaseLease(event, task, false);
+            }
+            task.transition(TaskState.CANCELLED, event, this);
         }
 
         private void taskRetry(Event event) {
