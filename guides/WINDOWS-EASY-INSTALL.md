@@ -78,3 +78,26 @@ Hvis installationen fejler, ligger loggen normalt her:
 `%LOCALAPPDATA%\HelixGrid\install.log`
 
 Du kan køre **windows-install.bat** igen. Installeren springer programmer over, som allerede er installeret.
+
+## Opdater HelixGrid
+
+Du kan opdatere på to nemme måder:
+
+1. Klik **Opdater HelixGrid** øverst i dashboardet.
+2. Eller dobbeltklik på **update.bat** i HelixGrid-mappen.
+
+Updateren:
+
+- kontrollerer at du ikke har lokale tracked kodeændringer, som kan blive overskrevet
+- henter nyeste version fra GitHub
+- bruger kun sikker fast-forward Git-opdatering
+- geninstallerer den lokale Python-pakke
+- rebuild'er/opdaterer Docker-services
+- bevarer dashboard-indstillinger og filer i resultatmappen
+- starter dashboardet igen
+
+Hvis updateren finder lokale kodeændringer, stopper den i stedet for at overskrive dem.
+
+Update-loggen ligger normalt her:
+
+`%LOCALAPPDATA%\HelixGrid\update.log`
