@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -37,6 +38,9 @@ type APIEnvelope[T any] struct {
 }
 
 func New(store *core.Store, logger *slog.Logger) *Server {
+	if store == nil {
+		store = core.NewStore(nil)
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -80,6 +84,13 @@ func decodeJSON[T any](w http.ResponseWriter, r *http.Request) (T, bool) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return value, false
 	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("multiple JSON values")
+		}
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return value, false
+	}
 	return value, true
 }
 
@@ -98,7 +109,12 @@ func (s *Server) createWorkflow(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	created, fresh, err := s.store.CreateWorkflow(spec, r.Header.Get("Idempotency-Key"))
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+	if len(idempotencyKey) > 512 {
+		writeError(w, http.StatusBadRequest, "Idempotency-Key exceeds 512 bytes")
+		return
+	}
+	created, fresh, err := s.store.CreateWorkflow(spec, idempotencyKey)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
@@ -139,6 +155,14 @@ func (s *Server) registerWorker(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.Name) == "" {
 		writeError(w, http.StatusBadRequest, "worker name is required")
+		return
+	}
+	if strings.TrimSpace(req.Version) == "" {
+		writeError(w, http.StatusBadRequest, "worker version is required")
+		return
+	}
+	if req.Capacity < 1 || req.Capacity > 256 {
+		writeError(w, http.StatusBadRequest, "worker capacity must be between 1 and 256")
 		return
 	}
 	worker := s.store.RegisterWorker(req)
@@ -239,17 +263,39 @@ func (s *Server) workflowEvents(w http.ResponseWriter, r *http.Request) {
 
 	after := int64(0)
 	if raw := r.Header.Get("Last-Event-ID"); raw != "" {
-		after, _ = strconv.ParseInt(raw, 10, 64)
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "Last-Event-ID must be a non-negative integer")
+			return
+		}
+		after = parsed
 	}
-	for _, event := range s.store.Events().Replay(workflowID, after) {
+
+	_, replay, events, cancel := s.store.Events().SubscribeReplay(workflowID, after, 1024)
+	defer cancel()
+	lastSent := after
+	for _, event := range replay {
 		if err := sendSSE(w, event); err != nil {
 			return
 		}
+		lastSent = event.ID
 	}
 	flusher.Flush()
 
-	_, events, cancel := s.store.Events().Subscribe(256)
-	defer cancel()
+	flushReplay := func() error {
+		for _, event := range s.store.Events().Replay(workflowID, lastSent) {
+			if event.ID <= lastSent {
+				continue
+			}
+			if err := sendSSE(w, event); err != nil {
+				return err
+			}
+			lastSent = event.ID
+		}
+		flusher.Flush()
+		return nil
+	}
+
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 	for {
@@ -260,14 +306,18 @@ func (s *Server) workflowEvents(w http.ResponseWriter, r *http.Request) {
 			if !open {
 				return
 			}
-			if event.WorkflowID != workflowID {
+			if event.WorkflowID != workflowID || event.ID <= lastSent {
 				continue
 			}
-			if err := sendSSE(w, event); err != nil {
+			// Replay from the last delivered ID before sending the live event. This
+			// recovers any events dropped from the bounded subscriber channel.
+			if err := flushReplay(); err != nil {
 				return
 			}
-			flusher.Flush()
 		case <-ping.C:
+			if err := flushReplay(); err != nil {
+				return
+			}
 			_, _ = fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
 		}
