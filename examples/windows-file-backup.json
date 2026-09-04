@@ -1,0 +1,19 @@
+{
+  "name": "windows-file-backup",
+  "metadata": {
+    "purpose": "read-only-source-backup"
+  },
+  "tasks": [
+    {
+      "id": "inventory-before-backup",
+      "command": ["python3", "/opt/helix/file_tools.py", "inventory", "--root", "/workspace", "--output", "/results/backup-inventory.json"],
+      "timeout_seconds": 3600
+    },
+    {
+      "id": "backup",
+      "depends_on": ["inventory-before-backup"],
+      "command": ["python3", "/opt/helix/file_tools.py", "backup", "--root", "/workspace", "--output", "/results/backup.tar.gz", "--metadata", "/results/backup.json"],
+      "timeout_seconds": 86400
+    }
+  ]
+}
