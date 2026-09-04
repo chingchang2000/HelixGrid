@@ -109,3 +109,39 @@ func TestEventBusReplayAndSubscription(t *testing.T) {
 	if len(replay) != 2 { t.Fatalf("replay len=%d want=2",len(replay)) }
 	for i:=0;i<4;i++ { <-ch }
 }
+
+
+func TestValidateSpecRejectsProtocolLimitViolations(t *testing.T) {
+	cases := []WorkflowSpec{
+		{Name: "bad id", Tasks: []TaskSpec{{ID: "has space", Command: []string{"true"}}}},
+		{Name: "retry", Tasks: []TaskSpec{{ID: "a", Command: []string{"true"}, Retry: RetryPolicy{BaseDelayMS: maxRetryBaseDelayMS + 1}}}},
+		{Name: "labels", Tasks: []TaskSpec{{ID: "a", Command: []string{"true"}, Labels: map[string]string{"": "bad"}}}},
+	}
+	for index, spec := range cases {
+		if _, err := ValidateSpec(spec); err == nil {
+			t.Fatalf("case %d unexpectedly passed validation", index)
+		}
+	}
+}
+
+func TestSubscribeReplayIsAtomicSnapshotPlusLiveSubscription(t *testing.T) {
+	bus := NewEventBus(10)
+	first := bus.Publish(Event{Type: EventWorkflowCreated, WorkflowID: "wf"})
+	bus.Publish(Event{Type: EventWorkflowCreated, WorkflowID: "other"})
+
+	_, replay, live, cancel := bus.SubscribeReplay("wf", 0, 4)
+	defer cancel()
+	if len(replay) != 1 || replay[0].ID != first.ID {
+		t.Fatalf("replay=%+v", replay)
+	}
+
+	next := bus.Publish(Event{Type: EventTaskReady, WorkflowID: "wf"})
+	select {
+	case got := <-live:
+		if got.ID != next.ID {
+			t.Fatalf("live id=%d want=%d", got.ID, next.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for live event")
+	}
+}
