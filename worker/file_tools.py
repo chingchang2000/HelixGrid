@@ -296,5 +296,10 @@ def parser():
     return p
 
 
+def main() -> int:
+    args = parser().parse_args()
+    return int(args.func(args))
+
+
 if __name__ == "__main__":
-    raise SystemExit(parser().parse_args().func(parser().parse_args()))
+    raise SystemExit(main())
