@@ -98,6 +98,23 @@ def run_command(args: list[str], *, config: DashboardConfig, timeout: int = 120,
     )
 
 
+def compose_up(config: DashboardConfig) -> None:
+    fast = run_command(
+        ["docker", "compose", "up", "-d", "--scale", f"worker={config.workers}"],
+        config=config,
+        timeout=180,
+        check=False,
+    )
+    if fast.returncode == 0:
+        return
+    run_command(
+        ["docker", "compose", "up", "-d", "--build", "--scale", f"worker={config.workers}"],
+        config=config,
+        timeout=900,
+        check=True,
+    )
+
+
 def docker_available() -> bool:
     try:
         result = subprocess.run(
@@ -374,20 +391,34 @@ class HelixDashboard(Tk):
             self.workers_var.set(workers)
         workspace = self.workspace_var.get().strip() or str(repo_root() / "workspace")
         results = self.results_var.get().strip() or str(repo_root() / "helix-results")
+        workspace_path = Path(workspace).resolve()
+        results_path = Path(results).resolve()
+        if (
+            workspace_path == results_path
+            or workspace_path in results_path.parents
+            or results_path in workspace_path.parents
+        ):
+            raise ValueError("Resultatmappen og arbejdsmappen skal være to separate mapper.")
+
         return DashboardConfig(
-            workspace=workspace,
-            results=results,
+            workspace=str(workspace_path),
+            results=str(results_path),
             workers=max(1, min(16, workers)),
             auto_start=bool(self.auto_start_var.get()),
         )
 
-    def save_settings(self) -> None:
-        config = self.current_config()
+    def save_settings(self) -> bool:
+        try:
+            config = self.current_config()
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("HelixGrid", str(exc))
+            return False
         Path(config.workspace).mkdir(parents=True, exist_ok=True)
         Path(config.results).mkdir(parents=True, exist_ok=True)
         config.save()
         self.config_state = config
         self.status_var.set("Indstillinger gemt")
+        return True
 
     def choose_workspace(self) -> None:
         selected = filedialog.askdirectory(title="Vælg mappe", initialdir=self.workspace_var.get() or str(Path.home()))
@@ -437,17 +468,14 @@ class HelixDashboard(Tk):
         raise RuntimeError("Docker Desktop startede ikke. Åbn Docker Desktop og prøv igen.")
 
     def start_cluster(self) -> None:
-        self.save_settings()
+        if not self.save_settings():
+            return
         config = self.config_state
 
         def work():
             self._events.put(("status", "Starter Docker…"))
             self._wait_for_docker()
-            run_command(
-                ["docker", "compose", "up", "-d", "--build", "--scale", f"worker={config.workers}"],
-                config=config,
-                timeout=900,
-            )
+            compose_up(config)
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
                 if coordinator_online():
@@ -458,7 +486,8 @@ class HelixDashboard(Tk):
         self._background("Starter HelixGrid…", work)
 
     def stop_cluster(self) -> None:
-        self.save_settings()
+        if not self.save_settings():
+            return
         config = self.config_state
 
         def work():
@@ -469,32 +498,26 @@ class HelixDashboard(Tk):
         self._background("Stopper…", work)
 
     def restart_cluster(self) -> None:
-        self.save_settings()
+        if not self.save_settings():
+            return
         config = self.config_state
 
         def work():
             self._wait_for_docker()
             run_command(["docker", "compose", "down"], config=config, timeout=120, check=False)
-            run_command(
-                ["docker", "compose", "up", "-d", "--build", "--scale", f"worker={config.workers}"],
-                config=config,
-                timeout=900,
-            )
+            compose_up(config)
             return "HelixGrid genstartet"
 
         self._background("Genstarter…", work)
 
     def run_workflow(self, mode: str) -> None:
-        self.save_settings()
+        if not self.save_settings():
+            return
         config = self.config_state
 
         def work():
             self._wait_for_docker()
-            run_command(
-                ["docker", "compose", "up", "-d", "--build", "--scale", f"worker={config.workers}"],
-                config=config,
-                timeout=900,
-            )
+            compose_up(config)
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline and not coordinator_online():
                 time.sleep(1)
@@ -570,7 +593,8 @@ class HelixDashboard(Tk):
             messagebox.showerror("HelixGrid", str(exc))
 
     def refresh_logs(self) -> None:
-        self.save_settings()
+        if not self.save_settings():
+            return
         config = self.config_state
 
         def work():
