@@ -367,10 +367,17 @@ class HelixDashboard(Tk):
         self.log_text.pack(fill="both", expand=True)
 
     def current_config(self) -> DashboardConfig:
+        try:
+            workers = int(self.workers_var.get())
+        except (ValueError, TypeError):
+            workers = 3
+            self.workers_var.set(workers)
+        workspace = self.workspace_var.get().strip() or str(repo_root() / "workspace")
+        results = self.results_var.get().strip() or str(repo_root() / "helix-results")
         return DashboardConfig(
-            workspace=self.workspace_var.get().strip(),
-            results=self.results_var.get().strip(),
-            workers=max(1, min(16, int(self.workers_var.get()))),
+            workspace=workspace,
+            results=results,
+            workers=max(1, min(16, workers)),
             auto_start=bool(self.auto_start_var.get()),
         )
 
@@ -412,26 +419,6 @@ class HelixDashboard(Tk):
 
         threading.Thread(target=runner, daemon=True).start()
 
-    def _poll_events(self) -> None:
-        while True:
-            try:
-                kind, payload = self._events.get_nowait()
-            except queue.Empty:
-                break
-            if kind == "success":
-                if isinstance(payload, str) and payload:
-                    self.status_var.set(payload)
-            elif kind == "error":
-                self.status_var.set(f"Fejl: {payload}")
-                messagebox.showerror("HelixGrid", str(payload))
-            elif kind == "idle":
-                self._busy = False
-                self.activity_var.set("Klar")
-                self.refresh_status()
-                self.refresh_workflows()
-                self.load_summary()
-        self.after(100, self._poll_events)
-
     def ensure_started(self) -> None:
         if coordinator_online():
             return
@@ -451,11 +438,11 @@ class HelixDashboard(Tk):
 
     def start_cluster(self) -> None:
         self.save_settings()
+        config = self.config_state
 
         def work():
             self._events.put(("status", "Starter Docker…"))
             self._wait_for_docker()
-            config = self.current_config()
             run_command(
                 ["docker", "compose", "up", "-d", "--build", "--scale", f"worker={config.workers}"],
                 config=config,
@@ -472,9 +459,9 @@ class HelixDashboard(Tk):
 
     def stop_cluster(self) -> None:
         self.save_settings()
+        config = self.config_state
 
         def work():
-            config = self.current_config()
             if docker_available():
                 run_command(["docker", "compose", "down"], config=config, timeout=120, check=False)
             return "HelixGrid stoppet"
@@ -483,10 +470,10 @@ class HelixDashboard(Tk):
 
     def restart_cluster(self) -> None:
         self.save_settings()
+        config = self.config_state
 
         def work():
             self._wait_for_docker()
-            config = self.current_config()
             run_command(["docker", "compose", "down"], config=config, timeout=120, check=False)
             run_command(
                 ["docker", "compose", "up", "-d", "--build", "--scale", f"worker={config.workers}"],
@@ -499,10 +486,10 @@ class HelixDashboard(Tk):
 
     def run_workflow(self, mode: str) -> None:
         self.save_settings()
+        config = self.config_state
 
         def work():
             self._wait_for_docker()
-            config = self.current_config()
             run_command(
                 ["docker", "compose", "up", "-d", "--build", "--scale", f"worker={config.workers}"],
                 config=config,
@@ -584,9 +571,9 @@ class HelixDashboard(Tk):
 
     def refresh_logs(self) -> None:
         self.save_settings()
+        config = self.config_state
 
         def work():
-            config = self.current_config()
             result = run_command(
                 ["docker", "compose", "logs", "--no-color", "--tail", "350"],
                 config=config,
