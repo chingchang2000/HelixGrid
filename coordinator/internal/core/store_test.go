@@ -152,3 +152,121 @@ func TestAppendLogTracksOutputLimitAccounting(t *testing.T) {
 	if !ok { t.Fatal("missing workflow") }
 	if got:=snapshot.Runtime["a"].OutputBytes; got!=6 { t.Fatalf("output bytes=%d",got) }
 }
+
+
+func TestCancelWorkflowReleasesWorkerSlotsAndLeaseMetadata(t *testing.T) {
+	store, _ := testStore(t)
+	workflow, _, err := store.CreateWorkflow(WorkflowSpec{Name: "cancel-active", Tasks: []TaskSpec{
+		{ID: "a", Command: []string{"true"}},
+		{ID: "b", Command: []string{"true"}},
+	}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := store.RegisterWorker(RegisterWorkerRequest{Name: "w", Version: "1", Capacity: 2})
+	lease, err := store.LeaseNext(worker.ID)
+	if err != nil || lease == nil {
+		t.Fatalf("lease=%v err=%v", lease, err)
+	}
+	if err := store.StartLease(lease.Token); err != nil {
+		t.Fatal(err)
+	}
+
+	cancelled, err := store.CancelWorkflow(workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.State != WorkflowCancelled {
+		t.Fatalf("state=%s", cancelled.State)
+	}
+	rt := cancelled.Runtime[lease.TaskID]
+	if rt.LeaseToken != "" || rt.LeaseOwner != "" || rt.LeaseUntil != nil {
+		t.Fatalf("cancelled task retained lease metadata: %+v", rt)
+	}
+	workers := store.ListWorkers()
+	if len(workers) != 1 || workers[0].ActiveLeases != 0 {
+		t.Fatalf("worker active leases after cancel: %+v", workers)
+	}
+	if _, ok := store.leases[lease.Token]; ok {
+		t.Fatal("cancelled lease remained in store")
+	}
+}
+
+func TestAppendLogLimitFailureDoesNotCorruptAccounting(t *testing.T) {
+	store, _ := testStore(t)
+	workflow, _, err := store.CreateWorkflow(simpleSpec(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := store.RegisterWorker(RegisterWorkerRequest{Name: "w", Version: "1", Capacity: 1})
+	lease, err := store.LeaseNext(worker.ID)
+	if err != nil || lease == nil {
+		t.Fatalf("lease=%v err=%v", lease, err)
+	}
+
+	store.workflows[workflow.ID].Runtime[lease.TaskID].OutputBytes = 32*1024*1024 - 1
+	if err := store.AppendLog(lease.Token, "stdout", "xx"); err == nil {
+		t.Fatal("expected output limit error")
+	}
+	snapshot, _ := store.GetWorkflow(workflow.ID)
+	if got := snapshot.Runtime[lease.TaskID].OutputBytes; got != 32*1024*1024-1 {
+		t.Fatalf("rejected log changed accounting: %d", got)
+	}
+}
+
+func TestLeaseExpiresAtExactBoundary(t *testing.T) {
+	store, clock := testStore(t)
+	_, _, err := store.CreateWorkflow(simpleSpec(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := store.RegisterWorker(RegisterWorkerRequest{Name: "w", Version: "1", Capacity: 1})
+	lease, err := store.LeaseNext(worker.ID)
+	if err != nil || lease == nil {
+		t.Fatalf("lease=%v err=%v", lease, err)
+	}
+	clock.Advance(store.leaseDuration)
+	if err := store.StartLease(lease.Token); err == nil {
+		t.Fatal("lease was accepted exactly at expiration boundary")
+	}
+	if got := store.ListWorkers()[0].ActiveLeases; got != 0 {
+		t.Fatalf("expired lease did not release worker slot: %d", got)
+	}
+}
+
+func TestSnapshotsAndLeaseSpecsAreDeepCopies(t *testing.T) {
+	store, _ := testStore(t)
+	spec := WorkflowSpec{Name: "copies", Tasks: []TaskSpec{{
+		ID: "a",
+		Command: []string{"sh", "-lc", "true"},
+		Env: map[string]string{"A": "original"},
+		Labels: map[string]string{"os": "linux"},
+	}}}
+	workflow, _, err := store.CreateWorkflow(spec, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := store.RegisterWorker(RegisterWorkerRequest{
+		Name: "w", Version: "1", Capacity: 1, Labels: map[string]string{"os": "linux"},
+	})
+	lease, err := store.LeaseNext(worker.ID)
+	if err != nil || lease == nil {
+		t.Fatalf("lease=%v err=%v", lease, err)
+	}
+
+	lease.Spec.Env["A"] = "mutated-through-lease"
+	first, _ := store.GetWorkflow(workflow.ID)
+	first.Tasks["a"].Env["A"] = "mutated-through-snapshot"
+	if first.Runtime["a"].LeaseUntil == nil {
+		t.Fatal("expected lease timestamp")
+	}
+	*first.Runtime["a"].LeaseUntil = time.Unix(1, 0).UTC()
+
+	second, _ := store.GetWorkflow(workflow.ID)
+	if got := second.Tasks["a"].Env["A"]; got != "original" {
+		t.Fatalf("internal task env was mutated: %q", got)
+	}
+	if second.Runtime["a"].LeaseUntil == nil || second.Runtime["a"].LeaseUntil.Equal(time.Unix(1, 0).UTC()) {
+		t.Fatal("internal lease timestamp was mutated through snapshot")
+	}
+}
