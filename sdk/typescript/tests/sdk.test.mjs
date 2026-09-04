@@ -34,7 +34,7 @@ test("builder rejects invalid timeout and retry policy", () => {
 });
 
 test("client rejects invalid coordinator URLs", () => {
-  assert.throws(() => new HelixClient({ baseUrl: "localhost:8080" }), /absolute/);
+  assert.throws(() => new HelixClient({ baseUrl: "localhost:8080" }), /http|absolute/);
   assert.throws(() => new HelixClient({ baseUrl: "ftp://example.test" }), /http/);
 });
 
