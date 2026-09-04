@@ -247,13 +247,22 @@ class Parser:
         self._skip_newlines()
         self._expect("{")
         self._skip_newlines()
+        task_ids: set[str] = set()
         while self.current.kind != "}":
             if self.current.kind == "EOF":
                 self._error("unterminated workflow block")
             if self.current.kind == "meta":
                 self._parse_meta(workflow)
             elif self.current.kind == "task":
-                workflow.tasks.append(self._parse_task())
+                task = self._parse_task()
+                if task.id in task_ids:
+                    raise DSLError(
+                        f"duplicate task id {task.id!r}",
+                        source=self.filename,
+                        line=task.line,
+                    )
+                task_ids.add(task.id)
+                workflow.tasks.append(task)
             else:
                 self._error("expected 'meta', 'task', or '}'")
             self._skip_newlines()
@@ -413,6 +422,10 @@ class Parser:
             self._skip_newlines()
             return
         if self.current.kind in {"}", "EOF"}:
+            return
+        # Compact task blocks may place multiple fields on one physical line.
+        # The parser still rejects arbitrary trailing tokens and duplicate fields.
+        if self.current.kind in {"run", "needs", "env", "labels", "timeout", "retry"}:
             return
         self._error("expected end of line")
 
